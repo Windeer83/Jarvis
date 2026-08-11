@@ -113,6 +113,11 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
                     ? $"下一项 {next.StartAt.ToLocalTime():t}：{Title(next)}"
                     : "当前没有进行中的工作承诺";
 
+        if (_pipeServer.FatalError is not null)
+        {
+            status = "桌面连接已停止：需重启 Jarvis Core（核心监督继续）";
+        }
+
         _statusItem.Text = status;
         SetTrayText($"Jarvis Core：{status}");
     }

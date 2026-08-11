@@ -37,6 +37,17 @@ internal sealed class FakeReminderSink : IReminderSink
     }
 }
 
+internal sealed class ThrowingReminderSink : IReminderSink
+{
+    public int AttemptCount { get; private set; }
+
+    public ValueTask PublishAsync(ReminderNotice notice, CancellationToken cancellationToken)
+    {
+        AttemptCount++;
+        return ValueTask.FromException(new InvalidOperationException("simulated reminder failure"));
+    }
+}
+
 internal sealed class TemporaryDatabase : IDisposable
 {
     private readonly string _directory = System.IO.Path.Combine(

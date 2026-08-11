@@ -53,14 +53,117 @@ public sealed class CorePipeScenarios
         Assert.Equal(confirm.Snapshot.Commitments.Single().Id, snapshot.Snapshot!.Commitments.Single().Id);
     }
 
-    private static async Task<CoreResponse> SendAsync(string pipeName, CoreRequest request)
+    [Fact]
+    public async Task Client_disconnect_before_response_does_not_stop_accept_loop()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(new DateTimeOffset(2026, 8, 12, 9, 0, 0, TimeSpan.FromHours(8)));
+        await using var module = await SupervisionModule.OpenAsync(
+            database.Path,
+            clock,
+            new FakeActivitySource(),
+            new FakeReminderSink());
+        var pipeName = $"Jarvis.Core.Tests.{Guid.NewGuid():N}";
+        await using var server = new CorePipeServer(pipeName, new CoreCommandHandler(module));
+        server.Start();
+
+        await using (var abandoned = new NamedPipeClientStream(
+                         ".",
+                         pipeName,
+                         PipeDirection.InOut,
+                         PipeOptions.Asynchronous))
+        {
+            await abandoned.ConnectAsync(1000);
+        }
+
+        await Task.Delay(100);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var snapshot = await SendAsync(
+            pipeName,
+            new CoreRequest(CoreOperations.GetSnapshot),
+            timeout.Token);
+
+        Assert.True(snapshot.Success);
+        Assert.Empty(snapshot.Snapshot!.Commitments);
+    }
+
+    [Fact]
+    public async Task Confirm_is_not_coupled_to_reminder_delivery_after_database_commit()
+    {
+        using var database = new TemporaryDatabase();
+        var now = new DateTimeOffset(2026, 8, 12, 9, 0, 0, TimeSpan.FromHours(8));
+        var clock = new FakeClock(now);
+        var reminderSink = new ThrowingReminderSink();
+        await using var module = await SupervisionModule.OpenAsync(
+            database.Path,
+            clock,
+            new FakeActivitySource(),
+            reminderSink);
+        var pipeName = $"Jarvis.Core.Tests.{Guid.NewGuid():N}";
+        await using var server = new CorePipeServer(pipeName, new CoreCommandHandler(module));
+        server.Start();
+
+        var prepare = await SendAsync(pipeName, new CoreRequest(
+            CoreOperations.Prepare,
+            Draft: new CommitmentDraft(
+                CommitmentKind.Computer,
+                now,
+                EndAt: null,
+                DurationMinutes: 60,
+                InputGoal: "验证提交边界",
+                OutcomeGoal: null,
+                RelatedAppsOrSites:
+                [
+                    new CommitmentTarget(CommitmentTargetKind.Application, "notepad.exe")
+                ],
+                SupervisionMode.Interactive,
+                ReminderSettings: null)));
+
+        var confirm = await SendAsync(pipeName, new CoreRequest(
+            CoreOperations.Confirm,
+            CandidateId: prepare.Card!.CandidateId));
+
+        Assert.True(confirm.Success);
+        Assert.Equal(0, reminderSink.AttemptCount);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => module.TickAsync());
+        Assert.Equal(1, reminderSink.AttemptCount);
+        Assert.Single((await module.GetSnapshotAsync()).Commitments);
+    }
+
+    [Fact]
+    public async Task Fatal_accept_loop_failure_is_exposed_to_the_core_host()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(new DateTimeOffset(2026, 8, 12, 9, 0, 0, TimeSpan.FromHours(8)));
+        await using var module = await SupervisionModule.OpenAsync(
+            database.Path,
+            clock,
+            new FakeActivitySource(),
+            new FakeReminderSink());
+        await using var server = new CorePipeServer(string.Empty, new CoreCommandHandler(module));
+
+        server.Start();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        while (server.FatalError is null)
+        {
+            await Task.Delay(10, timeout.Token);
+        }
+
+        Assert.NotNull(server.FatalError);
+    }
+
+    private static async Task<CoreResponse> SendAsync(
+        string pipeName,
+        CoreRequest request,
+        CancellationToken cancellationToken = default)
     {
         await using var pipe = new NamedPipeClientStream(
             ".",
             pipeName,
             PipeDirection.InOut,
             PipeOptions.Asynchronous);
-        await pipe.ConnectAsync(3000);
+        await pipe.ConnectAsync(3000, cancellationToken);
 
         using var reader = new StreamReader(
             pipe,
@@ -75,8 +178,10 @@ public sealed class CorePipeScenarios
             AutoFlush = true
         };
 
-        await writer.WriteLineAsync(JsonSerializer.Serialize(request, CoreProtocol.Json));
-        var response = await reader.ReadLineAsync();
+        await writer.WriteLineAsync(
+            JsonSerializer.Serialize(request, CoreProtocol.Json).AsMemory(),
+            cancellationToken);
+        var response = await reader.ReadLineAsync(cancellationToken);
         return JsonSerializer.Deserialize<CoreResponse>(response!, CoreProtocol.Json)!;
     }
 }

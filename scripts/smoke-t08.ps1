@@ -5,8 +5,23 @@ param(
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($DotnetPath)) {
+    $mainCheckoutCandidate = Join-Path $repositoryRoot ".tools\dotnet\dotnet.exe"
     $workspaceRoot = Split-Path -Parent (Split-Path -Parent $repositoryRoot)
-    $DotnetPath = Join-Path $workspaceRoot "Jarvis\.tools\dotnet\dotnet.exe"
+    $worktreeCandidate = Join-Path $workspaceRoot "Jarvis\.tools\dotnet\dotnet.exe"
+    if (Test-Path -LiteralPath $mainCheckoutCandidate) {
+        $DotnetPath = $mainCheckoutCandidate
+    }
+    elseif (Test-Path -LiteralPath $worktreeCandidate) {
+        $DotnetPath = $worktreeCandidate
+    }
+    else {
+        $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+        if (-not $dotnetCommand) {
+            throw "A .NET 10 SDK could not be found."
+        }
+
+        $DotnetPath = $dotnetCommand.Source
+    }
 }
 
 $DotnetPath = (Resolve-Path $DotnetPath).Path

@@ -31,11 +31,14 @@ internal sealed class CoreCommandHandler(SupervisionModule supervision)
                         return Failure(result.ErrorCode, result.Message);
                     }
 
-                    await supervision.TickAsync(cancellationToken).ConfigureAwait(false);
+                    var projection = await TryReadProjectionAfterMutationAsync(cancellationToken)
+                        .ConfigureAwait(false);
                     return new CoreResponse(
                         true,
-                        Message: "工作承诺已正式成立。",
-                        Snapshot: await supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false));
+                        Message: projection.IsAvailable
+                            ? "工作承诺已正式成立。"
+                            : "工作承诺已正式成立；当前状态暂时无法刷新，请稍后刷新。",
+                        Snapshot: projection.Snapshot);
                 }
 
             case CoreOperations.ConfirmOfflineStarted when request.CommitmentId is not null:
@@ -43,12 +46,19 @@ internal sealed class CoreCommandHandler(SupervisionModule supervision)
                     var result = await supervision.ConfirmOfflineStartedAsync(
                             request.CommitmentId.Value, cancellationToken)
                         .ConfigureAwait(false);
-                    return result.Success
-                        ? new CoreResponse(
-                            true,
-                            Message: "已记录线下工作开始确认。",
-                            Snapshot: await supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false))
-                        : Failure(result.ErrorCode, result.Message);
+                    if (!result.Success)
+                    {
+                        return Failure(result.ErrorCode, result.Message);
+                    }
+
+                    var projection = await TryReadProjectionAfterMutationAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                    return new CoreResponse(
+                        true,
+                        Message: projection.IsAvailable
+                            ? "已记录线下工作开始确认。"
+                            : "已记录线下工作开始确认；当前状态暂时无法刷新，请稍后刷新。",
+                        Snapshot: projection.Snapshot);
                 }
 
             case CoreOperations.GetSnapshot:
@@ -63,6 +73,25 @@ internal sealed class CoreCommandHandler(SupervisionModule supervision)
 
     private static CoreResponse Failure(string? errorCode, string? message) =>
         new(false, errorCode ?? "operation_failed", message ?? "操作失败。");
+
+    private async Task<(bool IsAvailable, SupervisionSnapshot? Snapshot)>
+        TryReadProjectionAfterMutationAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (
+                true,
+                await supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return (false, null);
+        }
+    }
 }
 
 internal sealed class CorePipeServer(
@@ -71,10 +100,13 @@ internal sealed class CorePipeServer(
 {
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _runTask;
+    private Exception? _fatalError;
+
+    public Exception? FatalError => Volatile.Read(ref _fatalError);
 
     public void Start()
     {
-        _runTask ??= RunAsync(_shutdown.Token);
+        _runTask ??= RunGuardedAsync(_shutdown.Token);
     }
 
     public async ValueTask DisposeAsync()
@@ -94,6 +126,21 @@ internal sealed class CorePipeServer(
         _shutdown.Dispose();
     }
 
+    private async Task RunGuardedAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await RunAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            Volatile.Write(ref _fatalError, exception);
+        }
+    }
+
     private async Task RunAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -106,7 +153,19 @@ internal sealed class CorePipeServer(
                 PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
 
             await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
-            await HandleConnectionAsync(pipe, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await HandleConnectionAsync(pipe, cancellationToken).ConfigureAwait(false);
+            }
+            catch (IOException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // A client may close after connecting or before reading its response.
+                // That failure belongs to this connection; the Core accept loop stays alive.
+            }
+            catch (IOException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
         }
     }
 
