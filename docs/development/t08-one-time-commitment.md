@@ -45,3 +45,10 @@ $env:DOTNET_ROOT = Split-Path -Parent $dotnet
 ## 剩余人工观察
 
 自动化已经验证规则、真实 SQLite 重启、IPC 和双进程启动；仍建议在目标电脑上做一次简短人工观察：表单和承诺卡片文字是否完整、准备缓冲期间 Desktop 与托盘是否显示一致，以及跨日时间是否清楚。锁屏活动证据的目标机 Gate 已由 T02 验证，本纵切沿用其 fail-closed 边界。
+
+## 2026-08-12 目标机验收
+
+- 目标机系统全局仅安装 .NET 8。首次人工启动暴露出 Core 直接启动 framework-dependent `Jarvis.Desktop.exe` 时找不到 .NET 10 的问题；修复后，Core 会仅向 Desktop 子进程传递当前 bundled .NET 10 的运行时根目录，不要求安装全局 .NET 10。
+- 确定性 smoke 把父进程的 `DOTNET_ROOT` 与 `DOTNET_ROOT_X64` 指向空目录，先确认直接启动 Desktop 必然失败，再确认 bundled Core 能启动保持存活且创建主窗口的 `Jarvis.Desktop.exe`；同时继续覆盖同一 SQLite 重启恢复与 Desktop 单实例。
+- 用户在隔离测试数据库中建立电脑型承诺，投入目标为“验证 Jarvis 一次性承诺”，成果目标为“留下一条正式承诺记录”，并亲自完成从确认、到点开始到到点结束的一次完整目标机流程。
+- 结束后的 Core 权威快照显示 `ActiveComputerCommitmentId = null`、承诺相位为 `AwaitingReview`：自动监督已经停止，但系统没有擅自把承诺判断为已完成。
