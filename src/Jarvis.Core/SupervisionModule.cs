@@ -28,6 +28,8 @@ public sealed class SupervisionModule : IAsyncDisposable
     private readonly object _candidateLock = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
     private CommitmentCard? _candidate;
+    private RecurrenceCard? _recurrenceCandidate;
+    private (RecurrenceChangeCard Card, RecurrenceChangeRequest Request)? _recurrenceChangeCandidate;
     private ActivityObservation? _latestActivity;
     private bool _disposed;
 
@@ -77,9 +79,284 @@ public sealed class SupervisionModule : IAsyncDisposable
         lock (_candidateLock)
         {
             _candidate = normalized.Value;
+            _recurrenceCandidate = null;
+            _recurrenceChangeCandidate = null;
         }
 
         return Task.FromResult(normalized);
+    }
+
+    public async Task<SupervisionResult<CommitmentTemplateView>> CreateTemplateAsync(
+        CommitmentTemplateDraft draft,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeTemplate(draft, _clock.Now);
+        if (!normalized.Success || normalized.Value is null)
+        {
+            return SupervisionResult<CommitmentTemplateView>.Fail(
+                normalized.ErrorCode!, normalized.Message!);
+        }
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var saved = await _store.SaveTemplateAsync(null, normalized.Value, cancellationToken)
+                .ConfigureAwait(false);
+            return SupervisionResult<CommitmentTemplateView>.Ok(saved);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<SupervisionResult<CommitmentTemplateView>> UpdateTemplateAsync(
+        Guid templateId,
+        CommitmentTemplateDraft draft,
+        CancellationToken cancellationToken = default)
+    {
+        var existing = await _store.ReadTemplateAsync(templateId, cancellationToken)
+            .ConfigureAwait(false);
+        if (existing is null || existing.IsArchived)
+        {
+            return SupervisionResult<CommitmentTemplateView>.Fail("template_not_found", "没有找到可修改的模板。");
+        }
+
+        var normalized = NormalizeTemplate(draft, _clock.Now, existing);
+        if (!normalized.Success || normalized.Value is null)
+        {
+            return SupervisionResult<CommitmentTemplateView>.Fail(
+                normalized.ErrorCode!, normalized.Message!);
+        }
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var saved = await _store.SaveTemplateAsync(templateId, normalized.Value, cancellationToken)
+                .ConfigureAwait(false);
+            return SupervisionResult<CommitmentTemplateView>.Ok(saved);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<SupervisionResult<CommitmentTemplateView>> ArchiveTemplateAsync(
+        Guid templateId,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var archived = await _store.ArchiveTemplateAsync(templateId, _clock.Now, cancellationToken)
+                .ConfigureAwait(false);
+            return archived is null
+                ? SupervisionResult<CommitmentTemplateView>.Fail("template_not_found", "没有找到该模板。")
+                : SupervisionResult<CommitmentTemplateView>.Ok(archived);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<SupervisionResult<CommitmentCard>> PrepareFromTemplateAsync(
+        TemplateCommitmentDraft draft,
+        CancellationToken cancellationToken = default)
+    {
+        var template = await _store.ReadTemplateAsync(draft.TemplateId, cancellationToken)
+            .ConfigureAwait(false);
+        if (template is null || template.IsArchived)
+        {
+            return SupervisionResult<CommitmentCard>.Fail("template_not_found", "没有找到可使用的模板。");
+        }
+
+        var duration = draft.DurationMinutes ?? template.DurationMinutes;
+        var commitment = new CommitmentDraft(
+            template.Kind,
+            draft.StartAt,
+            draft.EndAt,
+            duration,
+            draft.InputGoal ?? template.InputGoal,
+            draft.OutcomeGoal ?? template.OutcomeGoal,
+            draft.RelatedAppsOrSites ?? template.RelatedAppsOrSites,
+            draft.SupervisionMode ?? template.SupervisionMode,
+            draft.ReminderSettings ?? template.ReminderSettings,
+            draft.ActivityRules ?? template.ActivityRules,
+            draft.RestSettings ?? template.RestSettings,
+            template.Id);
+        return await PrepareAsync(commitment, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<SupervisionResult<RecurrenceCard>> PrepareRecurrenceAsync(
+        RecurrenceDraft draft,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var dates = ExpandDates(draft.Pattern);
+        if (!dates.Success || dates.Value is null)
+        {
+            return Task.FromResult(SupervisionResult<RecurrenceCard>.Fail(
+                dates.ErrorCode!, dates.Message!));
+        }
+
+        var cards = new List<CommitmentCard>();
+        foreach (var date in dates.Value)
+        {
+            DateTimeOffset start;
+            try
+            {
+                start = CombineLocal(date, TimeOnly.FromDateTime(draft.Commitment.StartAt.DateTime));
+            }
+            catch (ArgumentException)
+            {
+                return Task.FromResult(SupervisionResult<RecurrenceCard>.Fail(
+                    "recurrence_time_invalid", $"{date:yyyy-MM-dd} 的本地开始时间不存在。"));
+            }
+
+            var occurrenceDraft = draft.Commitment with
+            {
+                StartAt = start,
+                EndAt = draft.Commitment.EndAt is null
+                    ? null
+                    : start + (draft.Commitment.EndAt.Value - draft.Commitment.StartAt)
+            };
+            var normalized = Normalize(occurrenceDraft);
+            if (!normalized.Success || normalized.Value is null)
+            {
+                return Task.FromResult(SupervisionResult<RecurrenceCard>.Fail(
+                    normalized.ErrorCode!, $"{date:yyyy-MM-dd}: {normalized.Message}"));
+            }
+
+            cards.Add(normalized.Value);
+        }
+
+        var card = new RecurrenceCard(
+            Guid.NewGuid(), draft.Pattern, cards,
+            $"尚未正式成立；确认后将一次创建 {cards.Count} 条相互独立的工作承诺。");
+        lock (_candidateLock)
+        {
+            _candidate = null;
+            _recurrenceCandidate = card;
+            _recurrenceChangeCandidate = null;
+        }
+
+        return Task.FromResult(SupervisionResult<RecurrenceCard>.Ok(card));
+    }
+
+    public async Task<SupervisionResult<RecurrencePlanView>> ConfirmRecurrenceAsync(
+        Guid candidateId,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            RecurrenceCard? candidate;
+            lock (_candidateLock)
+            {
+                candidate = _recurrenceCandidate?.CandidateId == candidateId
+                    ? _recurrenceCandidate
+                    : null;
+            }
+
+            if (candidate is null)
+            {
+                return SupervisionResult<RecurrencePlanView>.Fail(
+                    "candidate_not_found", "重复安排候选已失效，请重新预览。");
+            }
+
+            var confirmed = await _store.ConfirmRecurrenceAsync(
+                candidate, _clock.Now, cancellationToken).ConfigureAwait(false);
+            if (confirmed.Success)
+            {
+                lock (_candidateLock)
+                {
+                    if (_recurrenceCandidate?.CandidateId == candidateId)
+                    {
+                        _recurrenceCandidate = null;
+                    }
+                }
+            }
+
+            return confirmed;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<SupervisionResult<RecurrenceChangeCard>> PrepareRecurrenceChangeAsync(
+        RecurrenceChangeRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var commitments = await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            var result = await _store.PrepareRecurrenceChangeAsync(
+                request, commitments, _clock.Now, cancellationToken).ConfigureAwait(false);
+            if (result.Success && result.Value is not null)
+            {
+                lock (_candidateLock)
+                {
+                    _candidate = null;
+                    _recurrenceCandidate = null;
+                    _recurrenceChangeCandidate = (result.Value, request);
+                }
+            }
+
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<SupervisionResult<RecurrencePlanView>> ConfirmRecurrenceChangeAsync(
+        Guid candidateId,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            RecurrenceChangeRequest? request;
+            lock (_candidateLock)
+            {
+                request = _recurrenceChangeCandidate is { } candidate &&
+                          candidate.Card.CandidateId == candidateId
+                    ? candidate.Request
+                    : null;
+            }
+
+            if (request is null)
+            {
+                return SupervisionResult<RecurrencePlanView>.Fail(
+                    "candidate_not_found", "重复安排修改候选已失效，请重新预览。");
+            }
+
+            var commitments = await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            var result = await _store.ChangeRecurrenceAsync(
+                request, commitments, _clock.Now, cancellationToken).ConfigureAwait(false);
+            if (result.Success)
+            {
+                lock (_candidateLock)
+                {
+                    if (_recurrenceChangeCandidate?.Card.CandidateId == candidateId)
+                    {
+                        _recurrenceChangeCandidate = null;
+                    }
+                }
+            }
+
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<SupervisionResult<CommitmentView>> ConfirmAsync(
@@ -102,7 +379,7 @@ public sealed class SupervisionModule : IAsyncDisposable
                     "candidate_not_found", "候选承诺已失效，请重新预览后确认。");
             }
 
-            var frozenActivityRules = card.ActivityRules ?? [];
+            var frozenActivityRules = card.ActivityRules;
             var confirmation = await _store.ConfirmAsync(
                     card, _clock.Now, frozenActivityRules, cancellationToken)
                 .ConfigureAwait(false);
@@ -137,6 +414,14 @@ public sealed class SupervisionModule : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var stored = (await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                .SingleOrDefault(item => item.Id == commitmentId);
+            if (stored?.IsSkipped == true)
+            {
+                return SupervisionResult<CommitmentView>.Fail(
+                    "offline_commitment_skipped", "已跳过的发生项不能确认开始。");
+            }
+
             var result = await _store.ConfirmOfflineStartedAsync(
                 commitmentId, _clock.Now, cancellationToken).ConfigureAwait(false);
             if (!result.Success || result.Value is null)
@@ -264,6 +549,16 @@ public sealed class SupervisionModule : IAsyncDisposable
             var original = state.Classification ?? ActivityClassification.Unknown;
             var binding = new ActivityRuleBinding(
                 scope, scopeId, new ActivityRule(state.CurrentTarget, classification));
+            IReadOnlyList<ActivityRuleBinding> bindings = scope == ActivityRuleScope.Commitment
+                ? [binding]
+                :
+                [
+                    binding,
+                    new ActivityRuleBinding(
+                        ActivityRuleScope.Commitment,
+                        commitment.Id,
+                        binding.Rule)
+                ];
             var correction = new ActivityCorrectionView(
                 state.CurrentTarget, original, classification, state.ActivityStateStartedAt.Value,
                 _clock.Now, scope, NormalizeOptional(note));
@@ -294,7 +589,7 @@ public sealed class SupervisionModule : IAsyncDisposable
                 (state, reminder) = PrepareLocalDeviationReminder(commitment, state);
             }
 
-            await _store.PersistClassificationAsync(binding, correction, state, reminder, cancellationToken)
+            await _store.PersistClassificationAsync(bindings, correction, state, reminder, cancellationToken)
                 .ConfigureAwait(false);
             if (reminder is not null)
             {
@@ -422,6 +717,7 @@ public sealed class SupervisionModule : IAsyncDisposable
             await PublishFreshStartRemindersAsync(commitments, now, cancellationToken).ConfigureAwait(false);
             var active = commitments.SingleOrDefault(commitment =>
                 commitment.Kind == CommitmentKind.Computer &&
+                !commitment.IsSkipped &&
                 commitment.StartAt <= now && now < commitment.EndAt);
             if (active is null)
             {
@@ -459,6 +755,7 @@ public sealed class SupervisionModule : IAsyncDisposable
             }
             var active = commitments.SingleOrDefault(commitment =>
                 commitment.Kind == CommitmentKind.Computer &&
+                !commitment.IsSkipped &&
                 commitment.StartAt <= now && now < commitment.EndAt);
             var activeView = active is null
                 ? null
@@ -468,7 +765,10 @@ public sealed class SupervisionModule : IAsyncDisposable
             return new SupervisionSnapshot(
                 now, active?.Id, views, active is null ? null : _latestActivity,
                 await _store.ReadLatestReminderAsync(cancellationToken).ConfigureAwait(false),
-                activeView);
+                activeView,
+                await _store.ReadTemplatesAsync(includeArchived: false, cancellationToken)
+                    .ConfigureAwait(false),
+                await _store.ReadPlansAsync(cancellationToken).ConfigureAwait(false));
         }
         finally
         {
@@ -705,7 +1005,8 @@ public sealed class SupervisionModule : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         foreach (var commitment in commitments.Where(item =>
-                     item.ReminderSettings.StartReminderEnabled && item.StartReminderSentAt is null &&
+                     !item.IsSkipped && item.ReminderSettings.StartReminderEnabled &&
+                     item.StartReminderSentAt is null &&
                      item.StartAt <= now && now < item.EndAt))
         {
             if (now <= commitment.StartAt.AddMinutes(5))
@@ -802,7 +1103,8 @@ public sealed class SupervisionModule : IAsyncDisposable
             return SupervisionResult<StoredCommitment>.Fail("commitment_not_found", "没有找到这条工作承诺。");
         }
 
-        if (commitment.Kind != CommitmentKind.Computer || now < commitment.StartAt || now >= commitment.EndAt)
+        if (commitment.IsSkipped || commitment.Kind != CommitmentKind.Computer ||
+            now < commitment.StartAt || now >= commitment.EndAt)
         {
             return SupervisionResult<StoredCommitment>.Fail(
                 "computer_supervision_not_active", "这条电脑型工作承诺当前不在监督时段内。");
@@ -1003,6 +1305,7 @@ public sealed class SupervisionModule : IAsyncDisposable
 
     private static CommitmentPhase DerivePhase(StoredCommitment commitment, DateTimeOffset now)
     {
+        if (commitment.IsSkipped) return CommitmentPhase.Skipped;
         if (now < commitment.StartAt) return CommitmentPhase.Scheduled;
         if (now >= commitment.EndAt) return CommitmentPhase.AwaitingReview;
         if (commitment.Kind == CommitmentKind.Offline) return CommitmentPhase.ActiveUnsupervised;
@@ -1051,6 +1354,109 @@ public sealed class SupervisionModule : IAsyncDisposable
 
     private static DateTimeOffset? Min(DateTimeOffset? first, DateTimeOffset? second) =>
         first is null ? second : second is null ? first : first <= second ? first : second;
+
+    private static SupervisionResult<CommitmentTemplateView> NormalizeTemplate(
+        CommitmentTemplateDraft draft,
+        DateTimeOffset now,
+        CommitmentTemplateView? existing = null)
+    {
+        var name = NormalizeOptional(draft.Name);
+        if (name is null)
+        {
+            return SupervisionResult<CommitmentTemplateView>.Fail(
+                "template_name_required", "模板名称不能为空。");
+        }
+
+        var normalized = Normalize(new CommitmentDraft(
+            draft.Kind, now.AddDays(1), null, draft.DurationMinutes,
+            draft.InputGoal, draft.OutcomeGoal, draft.RelatedAppsOrSites,
+            draft.SupervisionMode, draft.ReminderSettings, draft.ActivityRules,
+            draft.RestSettings));
+        if (!normalized.Success || normalized.Value is null)
+        {
+            return SupervisionResult<CommitmentTemplateView>.Fail(
+                normalized.ErrorCode!, normalized.Message!);
+        }
+
+        var card = normalized.Value;
+        return SupervisionResult<CommitmentTemplateView>.Ok(new CommitmentTemplateView(
+            existing?.Id ?? Guid.NewGuid(),
+            name,
+            card.Kind,
+            (int)(card.EndAt - card.StartAt).TotalMinutes,
+            card.InputGoal,
+            card.OutcomeGoal,
+            card.RelatedAppsOrSites,
+            card.SupervisionMode,
+            card.ReminderSettings,
+            card.ActivityRules,
+            card.RestSettings,
+            existing?.CreatedAt ?? now,
+            now,
+            existing?.IsArchived ?? false));
+    }
+
+    private static SupervisionResult<IReadOnlyList<DateOnly>> ExpandDates(RecurrencePattern pattern)
+    {
+        if (!Enum.IsDefined(pattern.Kind))
+        {
+            return SupervisionResult<IReadOnlyList<DateOnly>>.Fail(
+                "recurrence_kind_invalid", "重复规则类型无效。");
+        }
+
+        if (pattern.Kind == RecurrenceKind.SelectedDates)
+        {
+            var selected = (pattern.SelectedDates ?? []).Distinct().Order().ToArray();
+            return selected.Length == 0
+                ? SupervisionResult<IReadOnlyList<DateOnly>>.Fail(
+                    "recurrence_dates_required", "请至少选择一个日期。")
+                : SupervisionResult<IReadOnlyList<DateOnly>>.Ok(selected);
+        }
+
+        if (pattern.StartDate is null || pattern.EndDate is null || pattern.EndDate < pattern.StartDate)
+        {
+            return SupervisionResult<IReadOnlyList<DateOnly>>.Fail(
+                "recurrence_range_invalid", "每天或每周重复需要有限且有效的起止日期。");
+        }
+
+        var weekdays = (pattern.Weekdays ?? []).Distinct().ToHashSet();
+        if (pattern.Kind == RecurrenceKind.Weekly && weekdays.Count == 0)
+        {
+            return SupervisionResult<IReadOnlyList<DateOnly>>.Fail(
+                "recurrence_weekdays_required", "每周重复请至少选择一个星期。");
+        }
+
+        var dates = new List<DateOnly>();
+        for (var date = pattern.StartDate.Value; date <= pattern.EndDate.Value; date = date.AddDays(1))
+        {
+            if (pattern.Kind == RecurrenceKind.Daily || weekdays.Contains(date.DayOfWeek))
+            {
+                dates.Add(date);
+            }
+
+            if (date == DateOnly.MaxValue)
+            {
+                break;
+            }
+        }
+
+        return dates.Count == 0
+            ? SupervisionResult<IReadOnlyList<DateOnly>>.Fail(
+                "recurrence_has_no_occurrences", "所选范围内没有符合规则的日期。")
+            : SupervisionResult<IReadOnlyList<DateOnly>>.Ok(dates);
+    }
+
+    private static DateTimeOffset CombineLocal(DateOnly date, TimeOnly time)
+    {
+        var local = DateTime.SpecifyKind(date.ToDateTime(time), DateTimeKind.Unspecified);
+        if (TimeZoneInfo.Local.IsInvalidTime(local))
+        {
+            throw new ArgumentException("Invalid local time.");
+        }
+
+        return new DateTimeOffset(local, TimeZoneInfo.Local.GetUtcOffset(local));
+    }
+
 
     private static string? NormalizeOptional(string? value)
     {

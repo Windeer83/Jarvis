@@ -17,15 +17,15 @@ public sealed class LocalReminderPresentationScenarios
         var question = Notice(commitmentId, now, ReminderKind.UnknownClassificationQuestion);
 
         var allowed = LocalReminderPresentation.Evaluate(
-            deviation, distracting, commitmentId, now, false, true, false);
+            deviation, distracting, commitmentId, now, Reminders(), false, true, false);
         Assert.True(allowed.ShowBubble);
         Assert.False(allowed.ShowMarker);
         Assert.True(allowed.SuppressSound);
 
         Assert.False(LocalReminderPresentation.Evaluate(
-            deviation, related, commitmentId, now, false, true, false).ShowOverlay);
+            deviation, related, commitmentId, now, Reminders(), false, true, false).ShowOverlay);
         Assert.False(LocalReminderPresentation.Evaluate(
-            question, distracting, commitmentId, now, false, true, false).ShowOverlay);
+            question, distracting, commitmentId, now, Reminders(), false, true, false).ShowOverlay);
     }
 
     [Fact]
@@ -40,6 +40,7 @@ public sealed class LocalReminderPresentationScenarios
             state,
             commitmentId,
             now,
+            Reminders(),
             quietPresentation: true,
             foregroundIsFullscreen: false,
             muted: false);
@@ -47,6 +48,39 @@ public sealed class LocalReminderPresentationScenarios
         Assert.False(presentation.ShowOverlay);
         Assert.True(presentation.SuppressSound);
         Assert.True(state.ReminderMarkerActive);
+    }
+
+    [Fact]
+    public void Frozen_reminder_settings_are_combined_with_runtime_presentation_controls()
+    {
+        var now = DateTimeOffset.UnixEpoch;
+        var commitmentId = Guid.NewGuid();
+        var state = State(commitmentId, ActivityClassification.Distracting, marker: true);
+        var notice = Notice(commitmentId, now, ReminderKind.LocalDeviation);
+
+        var silent = LocalReminderPresentation.Evaluate(
+            notice,
+            state,
+            commitmentId,
+            now,
+            Reminders(soundEnabled: false),
+            quietPresentation: false,
+            foregroundIsFullscreen: false,
+            muted: false);
+        var quiet = LocalReminderPresentation.Evaluate(
+            notice,
+            state,
+            commitmentId,
+            now,
+            Reminders(quietPresentation: true),
+            quietPresentation: false,
+            foregroundIsFullscreen: false,
+            muted: false);
+
+        Assert.True(silent.ShowOverlay);
+        Assert.True(silent.SuppressSound);
+        Assert.False(quiet.ShowOverlay);
+        Assert.True(quiet.SuppressSound);
     }
 
     [Theory]
@@ -107,4 +141,16 @@ public sealed class LocalReminderPresentationScenarios
             now.AddSeconds(10),
             PlaySound: true,
             PersistentMarker: true);
+
+    private static ReminderSettings Reminders(
+        bool soundEnabled = true,
+        bool quietPresentation = false) =>
+        new(
+            StartReminderEnabled: true,
+            LocalDeviationMinutes: 5,
+            FirstMobileDeviationMinutes: 20,
+            MobileRepeatMinutes: 20,
+            MaxMobileReminders: 3,
+            soundEnabled,
+            quietPresentation);
 }

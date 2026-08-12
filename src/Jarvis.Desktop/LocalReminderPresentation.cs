@@ -14,10 +14,13 @@ public readonly record struct LocalReminderPresentation(
         ActiveSupervisionView state,
         Guid currentCommitmentId,
         DateTimeOffset now,
+        ReminderSettings reminderSettings,
         bool quietPresentation,
         bool foregroundIsFullscreen,
         bool muted)
     {
+        quietPresentation |= reminderSettings.QuietPresentation;
+        muted |= !reminderSettings.SoundEnabled;
         var freshCurrentBubble = reminder is not null &&
                                  reminder.CommitmentId == currentCommitmentId &&
                                  reminder.BubbleExpiresAt > now;

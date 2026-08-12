@@ -5,7 +5,9 @@ using Jarvis.Contracts;
 
 namespace Jarvis.Core;
 
-internal sealed class CoreCommandHandler(SupervisionModule supervision)
+internal sealed class CoreCommandHandler(
+    SupervisionModule supervision,
+    Func<CancellationToken, Task<SupervisionSnapshot>>? projectionReader = null)
 {
     public async Task<CoreResponse> HandleAsync(
         CoreRequest request,
@@ -59,6 +61,107 @@ internal sealed class CoreCommandHandler(SupervisionModule supervision)
                             ? "已记录线下工作开始确认。"
                             : "已记录线下工作开始确认；当前状态暂时无法刷新，请稍后刷新。",
                         Snapshot: projection.Snapshot);
+                }
+
+            case CoreOperations.CreateTemplate when request.TemplateDraft is not null:
+                {
+                    var result = await supervision.CreateTemplateAsync(
+                            request.TemplateDraft, cancellationToken)
+                        .ConfigureAwait(false);
+                    return result.Success
+                        ? await SuccessAfterMutationAsync(
+                                "模板已保存；保存模板不会创建工作承诺。",
+                                cancellationToken,
+                                template: result.Value)
+                            .ConfigureAwait(false)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.UpdateTemplate
+                when request.TemplateId is not null && request.TemplateDraft is not null:
+                {
+                    var result = await supervision.UpdateTemplateAsync(
+                            request.TemplateId.Value, request.TemplateDraft, cancellationToken)
+                        .ConfigureAwait(false);
+                    return result.Success
+                        ? await SuccessAfterMutationAsync(
+                                "模板已更新；既有承诺和历史发生项没有改变。",
+                                cancellationToken,
+                                template: result.Value)
+                            .ConfigureAwait(false)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.ArchiveTemplate when request.TemplateId is not null:
+                {
+                    var result = await supervision.ArchiveTemplateAsync(
+                            request.TemplateId.Value, cancellationToken)
+                        .ConfigureAwait(false);
+                    return result.Success
+                        ? await SuccessAfterMutationAsync(
+                                "模板已归档；由它生成的承诺仍然保留。",
+                                cancellationToken,
+                                template: result.Value)
+                            .ConfigureAwait(false)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.PrepareFromTemplate when request.TemplateCommitmentDraft is not null:
+                {
+                    var result = await supervision.PrepareFromTemplateAsync(
+                            request.TemplateCommitmentDraft, cancellationToken)
+                        .ConfigureAwait(false);
+                    return result.Success
+                        ? new CoreResponse(true, Card: result.Value)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.PrepareRecurrence when request.RecurrenceDraft is not null:
+                {
+                    var result = await supervision.PrepareRecurrenceAsync(
+                            request.RecurrenceDraft, cancellationToken)
+                        .ConfigureAwait(false);
+                    return result.Success
+                        ? new CoreResponse(true, RecurrenceCard: result.Value)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.ConfirmRecurrence when request.CandidateId is not null:
+                {
+                    var result = await supervision.ConfirmRecurrenceAsync(
+                            request.CandidateId.Value, cancellationToken)
+                        .ConfigureAwait(false);
+                    return result.Success
+                        ? await SuccessAfterMutationAsync(
+                                "重复安排已确认，每个日期都已生成独立工作承诺。",
+                                cancellationToken,
+                                recurrencePlan: result.Value)
+                            .ConfigureAwait(false)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.PrepareRecurrenceChange when request.RecurrenceChange is not null:
+                {
+                    var result = await supervision.PrepareRecurrenceChangeAsync(
+                            request.RecurrenceChange, cancellationToken)
+                        .ConfigureAwait(false);
+                    return result.Success
+                        ? new CoreResponse(true, RecurrenceChangeCard: result.Value)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.ConfirmRecurrenceChange when request.CandidateId is not null:
+                {
+                    var result = await supervision.ConfirmRecurrenceChangeAsync(
+                            request.CandidateId.Value, cancellationToken)
+                        .ConfigureAwait(false);
+                    return result.Success
+                        ? await SuccessAfterMutationAsync(
+                                "重复安排已按所选作用范围更新，历史记录仍保留。",
+                                cancellationToken,
+                                recurrencePlan: result.Value)
+                            .ConfigureAwait(false)
+                        : Failure(result.ErrorCode, result.Message);
                 }
 
             case CoreOperations.SaveActivityRule when request.ActivityRule is not null:
@@ -143,7 +246,9 @@ internal sealed class CoreCommandHandler(SupervisionModule supervision)
 
     private async Task<CoreResponse> SuccessAfterMutationAsync(
         string message,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CommitmentTemplateView? template = null,
+        RecurrencePlanView? recurrencePlan = null)
     {
         var projection = await TryReadProjectionAfterMutationAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -151,8 +256,10 @@ internal sealed class CoreCommandHandler(SupervisionModule supervision)
             true,
             Message: projection.IsAvailable
                 ? message
-                : $"{message} 当前状态暂时无法刷新，请稍后刷新。",
-            Snapshot: projection.Snapshot);
+                : $"{message} 正式写入已成功，但当前状态暂时无法刷新，请立即刷新状态。",
+            Snapshot: projection.Snapshot,
+            Template: template,
+            RecurrencePlan: recurrencePlan);
     }
 
     private async Task<(bool IsAvailable, SupervisionSnapshot? Snapshot)>
@@ -162,7 +269,9 @@ internal sealed class CoreCommandHandler(SupervisionModule supervision)
         {
             return (
                 true,
-                await supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false));
+                await (projectionReader is null
+                    ? supervision.GetSnapshotAsync(cancellationToken)
+                    : projectionReader(cancellationToken)).ConfigureAwait(false));
         }
         catch (OperationCanceledException)
         {

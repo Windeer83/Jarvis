@@ -18,7 +18,8 @@ internal sealed record StoredCommitment(
     DateTimeOffset? StartReminderSentAt,
     DateTimeOffset? OfflineManuallyConfirmedAt,
     Guid? TemplateId,
-    RestSettings RestSettings);
+    RestSettings RestSettings,
+    bool IsSkipped);
 
 internal sealed record StoredSupervisionRuntime(
     Guid CommitmentId,
@@ -44,7 +45,7 @@ internal sealed record StoredSupervisionRuntime(
     DateTimeOffset? RestPromptedForIdleStart = null,
     DateTimeOffset? LastRestEndedAt = null);
 
-internal sealed class SqliteCommitmentStore
+internal sealed partial class SqliteCommitmentStore
 {
     private readonly string _connectionString;
 
@@ -75,24 +76,24 @@ internal sealed class SqliteCommitmentStore
         var version = Convert.ToInt32(
             await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
-        if (version > 2)
+        if (version > 3)
         {
-            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 2。");
+            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 3。");
         }
 
-        if (version == 2)
+        if (version == 3)
         {
             return;
         }
 
         await using var migration = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
-        await MigrateToVersionTwoAsync(connection, migration, version, cancellationToken)
+        await MigrateToVersionThreeAsync(connection, migration, version, cancellationToken)
             .ConfigureAwait(false);
         await migration.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    internal static async Task MigrateToVersionTwoAsync(
+    internal static async Task MigrateToVersionThreeAsync(
         SqliteConnection connection,
         SqliteTransaction migration,
         int version,
@@ -120,6 +121,9 @@ internal sealed class SqliteCommitmentStore
                     template_id TEXT NULL,
                     idle_prompt_minutes INTEGER NOT NULL DEFAULT 10,
                     default_total_rest_minutes INTEGER NOT NULL DEFAULT 15,
+                    sound_enabled INTEGER NOT NULL DEFAULT 1,
+                    quiet_presentation INTEGER NOT NULL DEFAULT 0,
+                    is_skipped INTEGER NOT NULL DEFAULT 0,
                     CHECK (end_at_utc > start_at_utc),
                     CHECK (
                         (input_goal IS NOT NULL AND length(trim(input_goal)) > 0)
@@ -222,6 +226,23 @@ internal sealed class SqliteCommitmentStore
                 .ConfigureAwait(false);
         }
 
+        if (version is 1 or 2)
+        {
+            await ExecuteSchemaAsync(connection, migration, """
+                ALTER TABLE commitments ADD COLUMN sound_enabled INTEGER NOT NULL DEFAULT 1;
+                ALTER TABLE commitments ADD COLUMN quiet_presentation INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE commitments ADD COLUMN is_skipped INTEGER NOT NULL DEFAULT 0;
+                """, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (version < 3)
+        {
+            await ExecuteSchemaAsync(connection, migration, PlanningSchema, cancellationToken)
+                .ConfigureAwait(false);
+            await ExecuteSchemaAsync(connection, migration, "PRAGMA user_version = 3;", cancellationToken)
+                .ConfigureAwait(false);
+        }
+
     }
 
     public async Task<SupervisionResult<StoredCommitment>> ConfirmAsync(
@@ -240,7 +261,8 @@ internal sealed class SqliteCommitmentStore
             conflict.CommandText = """
                 SELECT COALESCE(input_goal, outcome_goal), start_at_utc, end_at_utc
                 FROM commitments
-                WHERE kind = $kind AND start_at_utc < $end AND end_at_utc > $start
+                WHERE kind = $kind AND is_skipped = 0
+                  AND start_at_utc < $end AND end_at_utc > $start
                 LIMIT 1;
                 """;
             conflict.Parameters.AddWithValue("$kind", (int)CommitmentKind.Computer);
@@ -256,6 +278,26 @@ internal sealed class SqliteCommitmentStore
         }
 
         var id = Guid.NewGuid();
+        await InsertCommitmentAsync(
+            connection, transaction, id, card, confirmedAt, frozenActivityRules, cancellationToken)
+            .ConfigureAwait(false);
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return SupervisionResult<StoredCommitment>.Ok(new StoredCommitment(
+            id, card.Kind, card.StartAt, card.EndAt, card.InputGoal, card.OutcomeGoal,
+            card.RelatedAppsOrSites, card.SupervisionMode, card.ReminderSettings, confirmedAt,
+            null, null, card.TemplateId, card.RestSettings, false));
+    }
+
+    private static async Task InsertCommitmentAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid id,
+        CommitmentCard card,
+        DateTimeOffset confirmedAt,
+        IReadOnlyList<ActivityRule> frozenActivityRules,
+        CancellationToken cancellationToken)
+    {
         await using (var insert = connection.CreateCommand())
         {
             insert.Transaction = transaction;
@@ -264,10 +306,12 @@ internal sealed class SqliteCommitmentStore
                     id, kind, start_at_utc, end_at_utc, input_goal, outcome_goal,
                     supervision_mode, start_reminder_enabled, local_deviation_minutes,
                     first_mobile_deviation_minutes, mobile_repeat_minutes, max_mobile_reminders,
-                    confirmed_at_utc, template_id, idle_prompt_minutes, default_total_rest_minutes)
+                    confirmed_at_utc, template_id, idle_prompt_minutes, default_total_rest_minutes,
+                    sound_enabled, quiet_presentation, is_skipped)
                 VALUES ($id, $kind, $start, $end, $inputGoal, $outcomeGoal, $mode,
                     $startReminderEnabled, $localMinutes, $firstMobileMinutes, $repeatMinutes,
-                    $maxMobileReminders, $confirmedAt, $templateId, $idlePrompt, $defaultRest);
+                    $maxMobileReminders, $confirmedAt, $templateId, $idlePrompt, $defaultRest,
+                    $soundEnabled, $quietPresentation, 0);
                 """;
             Add(insert, "$id", id.ToString("D"));
             Add(insert, "$kind", (int)card.Kind);
@@ -283,8 +327,10 @@ internal sealed class SqliteCommitmentStore
             Add(insert, "$maxMobileReminders", card.ReminderSettings.MaxMobileReminders);
             Add(insert, "$confirmedAt", Format(confirmedAt));
             Add(insert, "$templateId", card.TemplateId?.ToString("D"));
-            Add(insert, "$idlePrompt", card.RestSettings!.IdlePromptMinutes);
+            Add(insert, "$idlePrompt", card.RestSettings.IdlePromptMinutes);
             Add(insert, "$defaultRest", card.RestSettings.DefaultTotalRestMinutes);
+            Add(insert, "$soundEnabled", card.ReminderSettings.SoundEnabled ? 1 : 0);
+            Add(insert, "$quietPresentation", card.ReminderSettings.QuietPresentation ? 1 : 0);
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
@@ -305,30 +351,13 @@ internal sealed class SqliteCommitmentStore
 
         foreach (var rule in frozenActivityRules)
         {
-            await using var ruleCommand = connection.CreateCommand();
-            ruleCommand.Transaction = transaction;
-            ruleCommand.CommandText = """
-                INSERT INTO activity_rules (
-                    scope, scope_id, target_kind, target_value, target_key, classification)
-                VALUES ($scope, $scopeId, $kind, $value, $key, $classification)
-                ON CONFLICT(scope, scope_id, target_kind, target_key) DO UPDATE SET
-                    target_value = excluded.target_value,
-                    classification = excluded.classification;
-                """;
-            Add(ruleCommand, "$scope", (int)ActivityRuleScope.Commitment);
-            Add(ruleCommand, "$scopeId", id.ToString("D"));
-            Add(ruleCommand, "$kind", (int)rule.Target.Kind);
-            Add(ruleCommand, "$value", rule.Target.Value);
-            Add(ruleCommand, "$key", Key(rule.Target.Kind, rule.Target.Value));
-            Add(ruleCommand, "$classification", (int)rule.Classification);
-            await ruleCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await UpsertActivityRuleAsync(
+                    connection,
+                    transaction,
+                    new ActivityRuleBinding(ActivityRuleScope.Commitment, id, rule),
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
-
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return SupervisionResult<StoredCommitment>.Ok(new StoredCommitment(
-            id, card.Kind, card.StartAt, card.EndAt, card.InputGoal, card.OutcomeGoal,
-            card.RelatedAppsOrSites, card.SupervisionMode, card.ReminderSettings, confirmedAt,
-            null, null, card.TemplateId, card.RestSettings!));
     }
 
     public async Task<IReadOnlyList<StoredCommitment>> ReadAllAsync(CancellationToken cancellationToken)
@@ -341,7 +370,8 @@ internal sealed class SqliteCommitmentStore
                    c.first_mobile_deviation_minutes, c.mobile_repeat_minutes, c.max_mobile_reminders,
                    c.confirmed_at_utc, c.start_reminder_sent_at_utc,
                    c.offline_manually_confirmed_at_utc, c.template_id,
-                   c.idle_prompt_minutes, c.default_total_rest_minutes, t.kind, t.value
+                   c.idle_prompt_minutes, c.default_total_rest_minutes,
+                   c.sound_enabled, c.quiet_presentation, c.is_skipped, t.kind, t.value
             FROM commitments c
             LEFT JOIN commitment_targets t ON t.commitment_id = c.id
             ORDER BY c.start_at_utc, c.id, t.ordinal;
@@ -364,9 +394,9 @@ internal sealed class SqliteCommitmentStore
                 current = ReadCommitment(reader, targets);
             }
 
-            if (!reader.IsDBNull(18))
+            if (!reader.IsDBNull(21))
             {
-                targets!.Add(new CommitmentTarget((CommitmentTargetKind)reader.GetInt32(18), reader.GetString(19)));
+                targets!.Add(new CommitmentTarget((CommitmentTargetKind)reader.GetInt32(21), reader.GetString(22)));
             }
         }
 
@@ -591,7 +621,7 @@ internal sealed class SqliteCommitmentStore
     }
 
     public async Task PersistClassificationAsync(
-        ActivityRuleBinding binding,
+        IReadOnlyList<ActivityRuleBinding> bindings,
         ActivityCorrectionView correction,
         StoredSupervisionRuntime state,
         ReminderNotice? notice,
@@ -600,7 +630,11 @@ internal sealed class SqliteCommitmentStore
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
-        await UpsertActivityRuleAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
+        foreach (var binding in bindings)
+        {
+            await UpsertActivityRuleAsync(connection, transaction, binding, cancellationToken)
+                .ConfigureAwait(false);
+        }
         await InsertCorrectionAsync(connection, transaction, state.CommitmentId, correction, cancellationToken)
             .ConfigureAwait(false);
         if (notice is not null)
@@ -615,7 +649,7 @@ internal sealed class SqliteCommitmentStore
     }
 
     internal async Task PersistClassificationForTestAsync(
-        ActivityRuleBinding binding,
+        IReadOnlyList<ActivityRuleBinding> bindings,
         ActivityCorrectionView correction,
         StoredSupervisionRuntime state,
         ReminderNotice? notice,
@@ -625,7 +659,11 @@ internal sealed class SqliteCommitmentStore
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
-        await UpsertActivityRuleAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
+        foreach (var binding in bindings)
+        {
+            await UpsertActivityRuleAsync(connection, transaction, binding, cancellationToken)
+                .ConfigureAwait(false);
+        }
         await InsertCorrectionAsync(connection, transaction, state.CommitmentId, correction, cancellationToken)
             .ConfigureAwait(false);
         if (notice is not null)
@@ -877,10 +915,12 @@ internal sealed class SqliteCommitmentStore
             reader.IsDBNull(5) ? null : reader.GetString(5), targets,
             (SupervisionMode)reader.GetInt32(6),
             new ReminderSettings(reader.GetInt32(7) != 0, reader.GetInt32(8), reader.GetInt32(9),
-                reader.GetInt32(10), reader.GetInt32(11)),
+                reader.GetInt32(10), reader.GetInt32(11), reader.GetInt32(18) != 0,
+                reader.GetInt32(19) != 0),
             Parse(reader.GetString(12)), NullableTime(reader, 13), NullableTime(reader, 14),
             reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)),
-            new RestSettings(reader.GetInt32(16), reader.GetInt32(17)));
+            new RestSettings(reader.GetInt32(16), reader.GetInt32(17)),
+            reader.GetInt32(20) != 0);
 
     private static void Add(SqliteCommand command, string name, object? value) =>
         command.Parameters.AddWithValue(name, value ?? DBNull.Value);

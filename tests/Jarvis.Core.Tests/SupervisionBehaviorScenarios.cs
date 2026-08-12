@@ -146,7 +146,7 @@ public sealed class SupervisionBehaviorScenarios
         await restarted.TickAsync();
         var snapshot = await restarted.GetSnapshotAsync();
         Assert.Equal(new RestSettings(7, 12), snapshot.Commitments.Single().RestSettings);
-        Assert.Contains(snapshot.Commitments.Single().ActivityRules!, rule =>
+        Assert.Contains(snapshot.Commitments.Single().ActivityRules, rule =>
             rule.Target.Value == "research.exe" &&
             rule.Classification == ActivityClassification.Related);
         Assert.Equal(commitmentId, snapshot.ActiveComputerCommitmentId);
@@ -189,6 +189,70 @@ public sealed class SupervisionBehaviorScenarios
                           correction.EffectiveFrom == Start.AddMinutes(5));
     }
 
+    [Theory]
+    [InlineData(ActivityRuleScope.Template)]
+    [InlineData(ActivityRuleScope.Global)]
+    public async Task Wider_scope_correction_also_overrides_the_frozen_rule_for_the_current_commitment(
+        ActivityRuleScope scope)
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        var activity = new FakeActivitySource();
+        Guid commitmentId;
+
+        await using (var module = await SupervisionModule.OpenAsync(
+                         database.Path, clock, activity, new FakeReminderSink()))
+        {
+            var template = await module.CreateTemplateAsync(new CommitmentTemplateDraft(
+                "current correction",
+                CommitmentKind.Computer,
+                90,
+                "supervise",
+                null,
+                [new CommitmentTarget(CommitmentTargetKind.Application, "Excel.exe")],
+                SupervisionMode.Interactive,
+                null,
+                [
+                    new ActivityRule(
+                        new CommitmentTarget(CommitmentTargetKind.Application, "mystery.exe"),
+                        ActivityClassification.Distracting)
+                ],
+                new RestSettings(10, 15)));
+            Assert.True(template.Success, template.Message);
+            var prepared = await module.PrepareFromTemplateAsync(new TemplateCommitmentDraft(
+                template.Value!.Id,
+                Start));
+            var confirmed = await module.ConfirmAsync(prepared.Value!.CandidateId);
+            commitmentId = confirmed.Value!.Id;
+
+            Observe(activity, clock, "mystery.exe", active: true);
+            await module.TickAsync();
+            Assert.Equal(ActivityClassification.Distracting,
+                (await module.GetSnapshotAsync()).ActiveSupervision!.Classification);
+
+            var corrected = await module.ClassifyCurrentActivityAsync(
+                commitmentId,
+                ActivityClassification.Related,
+                scope);
+            Assert.True(corrected.Success, corrected.Message);
+            clock.Now = Start.AddMinutes(1);
+            Observe(activity, clock, "mystery.exe", active: true);
+            await module.TickAsync();
+            Assert.Equal(ActivityClassification.Related,
+                (await module.GetSnapshotAsync()).ActiveSupervision!.Classification);
+        }
+
+        await using var restarted = await SupervisionModule.OpenAsync(
+            database.Path, clock, activity, new FakeReminderSink());
+        await restarted.TickAsync();
+        var snapshot = await restarted.GetSnapshotAsync();
+        Assert.Equal(ActivityClassification.Related, snapshot.ActiveSupervision!.Classification);
+        Assert.Contains(
+            snapshot.Commitments.Single(item => item.Id == commitmentId).ActivityRules,
+            rule => rule.Target.Value == "mystery.exe" &&
+                    rule.Classification == ActivityClassification.Related);
+    }
+
     [Fact]
     public async Task Invalid_rule_scope_fails_before_any_classification_change()
     {
@@ -224,6 +288,10 @@ public sealed class SupervisionBehaviorScenarios
             ActivityRuleScope.Commitment,
             commitment.Id,
             new ActivityRule(target, ActivityClassification.Distracting));
+        var globalBinding = new ActivityRuleBinding(
+            ActivityRuleScope.Global,
+            null,
+            new ActivityRule(target, ActivityClassification.Distracting));
         var correction = new ActivityCorrectionView(
             target,
             ActivityClassification.Unknown,
@@ -255,7 +323,7 @@ public sealed class SupervisionBehaviorScenarios
         var store = new SqliteCommitmentStore(database.Path);
 
         await Assert.ThrowsAsync<SqliteException>(() => store.PersistClassificationForTestAsync(
-            binding,
+            [binding, globalBinding],
             correction,
             runtime,
             notice,
@@ -269,6 +337,8 @@ public sealed class SupervisionBehaviorScenarios
 
         Assert.Null(await store.FindActivityRuleAsync(
             ActivityRuleScope.Commitment, commitment.Id, target, CancellationToken.None));
+        Assert.Null(await store.FindActivityRuleAsync(
+            ActivityRuleScope.Global, null, target, CancellationToken.None));
         Assert.Empty(await store.ReadCorrectionsAsync(commitment.Id, CancellationToken.None));
         Assert.Null(await store.ReadLatestReminderAsync(CancellationToken.None));
         var unchanged = await store.ReadRuntimeAsync(commitment.Id, CancellationToken.None);
