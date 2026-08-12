@@ -16,9 +16,11 @@ public partial class MainWindow : Window
     private CommitmentCard? _candidate;
     private RecurrenceCard? _recurrenceCandidate;
     private RecurrenceChangeCard? _recurrenceChangeCandidate;
+    private CommitmentRevisionCard? _revisionCandidate;
     private Guid? _selectedTemplateId;
     private Guid? _selectedPlanId;
     private SupervisionSnapshot? _snapshot;
+    private CommitmentView? _revisionSource;
     private readonly LocalReminderSoundGate _soundGate = new();
     private bool _refreshing;
     private bool _suppressSelectionEvents;
@@ -55,6 +57,7 @@ public partial class MainWindow : Window
         RangeStartPicker.SelectedDate = suggestedStart.Date;
         RangeEndPicker.SelectedDate = suggestedStart.Date.AddDays(6);
         RecurrenceValuesBox.Text = "1,2,3,4,5";
+        AdjustmentReasonPanel.Visibility = Visibility.Collapsed;
 
         _refreshTimer.Tick += async (_, _) => await RefreshSnapshotAsync();
         _reminderOverlay.RestoreRequested += (_, _) => RestoreConfigurationWindow();
@@ -72,6 +75,12 @@ public partial class MainWindow : Window
 
     private async void PreviewButton_Click(object sender, RoutedEventArgs eventArgs)
     {
+        if (_revisionSource is not null)
+        {
+            await PrepareRevisionAsync();
+            return;
+        }
+
         if (!TryBuildDraft(out var draft, out var validationMessage))
         {
             SetOperationStatus(validationMessage, isError: true);
@@ -207,6 +216,12 @@ public partial class MainWindow : Window
 
     private async void PreviewRecurrenceButton_Click(object sender, RoutedEventArgs eventArgs)
     {
+        if (_revisionSource is not null)
+        {
+            SetOperationStatus("请先完成或取消当前修订。", isError: true);
+            return;
+        }
+
         if (!TryBuildDraft(out var commitment, out var validationMessage) ||
             !TryBuildRecurrencePattern(out var pattern, out validationMessage))
         {
@@ -225,6 +240,7 @@ public partial class MainWindow : Window
 
         _candidate = null;
         _recurrenceChangeCandidate = null;
+        _revisionCandidate = null;
         _recurrenceCandidate = response.RecurrenceCard;
         ShowRecurrenceCard(response.RecurrenceCard);
         SetOperationStatus("请核对所有日期；点击确认后才会一次性写入全部独立承诺。");
@@ -232,7 +248,8 @@ public partial class MainWindow : Window
 
     private async void ConfirmButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (_candidate is null && _recurrenceCandidate is null && _recurrenceChangeCandidate is null)
+        if (_candidate is null && _recurrenceCandidate is null &&
+            _recurrenceChangeCandidate is null && _revisionCandidate is null)
         {
             return;
         }
@@ -240,7 +257,11 @@ public partial class MainWindow : Window
         ConfirmButton.IsEnabled = false;
         try
         {
-            var request = _recurrenceCandidate is not null
+            var request = _revisionCandidate is not null
+                ? new CoreRequest(
+                    CoreOperations.ConfirmCommitmentRevision,
+                    CandidateId: _revisionCandidate.CandidateId)
+                : _recurrenceCandidate is not null
                 ? new CoreRequest(
                     CoreOperations.ConfirmRecurrence,
                     CandidateId: _recurrenceCandidate.CandidateId)
@@ -253,12 +274,20 @@ public partial class MainWindow : Window
             if (!response.Success)
             {
                 SetOperationStatus(response.Message ?? "Core 未能确认这张候选卡片。", isError: true);
+                if (_revisionCandidate is not null &&
+                    response.ErrorCode is "commitment_version_stale" or "candidate_not_found")
+                {
+                    DiscardRevisionCandidate();
+                    SetOperationStatus("这张修订候选已失效。请重新选择最新承诺并预览。", isError: true);
+                    await RefreshSnapshotAsync();
+                }
                 return;
             }
 
             _candidate = null;
             _recurrenceCandidate = null;
             _recurrenceChangeCandidate = null;
+            _revisionCandidate = null;
             CardBorder.Visibility = Visibility.Collapsed;
             SetOperationStatus(response.Message ?? "候选内容已正式写入。");
             if (response.RecurrencePlan is not null)
@@ -266,11 +295,19 @@ public partial class MainWindow : Window
                 _selectedPlanId = response.RecurrencePlan.Id;
             }
 
+            if (_revisionSource is not null)
+            {
+                LeaveRevisionMode();
+            }
+
             await ApplyMutationProjectionAsync(response);
         }
         finally
         {
-            ConfirmButton.IsEnabled = true;
+            ConfirmButton.IsEnabled = _candidate is not null ||
+                                      _recurrenceCandidate is not null ||
+                                      _recurrenceChangeCandidate is not null ||
+                                      _revisionCandidate is not null;
         }
     }
 
@@ -279,18 +316,39 @@ public partial class MainWindow : Window
         _candidate = null;
         _recurrenceCandidate = null;
         _recurrenceChangeCandidate = null;
+        _revisionCandidate = null;
         CardBorder.Visibility = Visibility.Collapsed;
+        ConfirmButton.Content = _revisionSource is null ? "确认，正式成立" : "确认修订";
         SetOperationStatus("已放弃候选卡片；Core 正式状态没有改变。");
     }
 
-    private async void SkipOccurrenceButton_Click(object sender, RoutedEventArgs eventArgs) =>
+    private async void SkipOccurrenceButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        AdjustmentReasonPanel.Visibility = Visibility.Collapsed;
         await ChangeOccurrenceAsync(RecurrenceChangeKind.Skip);
+    }
 
-    private async void AdjustOccurrenceButton_Click(object sender, RoutedEventArgs eventArgs) =>
+    private async void AdjustOccurrenceButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        AdjustmentReasonPanel.Visibility = Visibility.Visible;
+        if (string.IsNullOrWhiteSpace(AdjustmentReasonBox.Text))
+        {
+            SetOperationStatus("请先填写调整原因，再点一次“调整”。", isError: true);
+            AdjustmentReasonBox.Focus();
+            return;
+        }
+
         await ChangeOccurrenceAsync(RecurrenceChangeKind.Adjust);
+    }
 
     private async Task ChangeOccurrenceAsync(RecurrenceChangeKind kind)
     {
+        if (_revisionSource is not null)
+        {
+            SetOperationStatus("请先完成或取消当前修订。", isError: true);
+            return;
+        }
+
         if (PlanBox.SelectedItem is not PlanChoice choice ||
             OccurrenceGrid.SelectedItem is not RecurrenceOccurrenceView occurrence)
         {
@@ -303,6 +361,7 @@ public partial class MainWindow : Window
             : RecurrenceChangeScope.ThisOccurrence;
         DateTimeOffset? newStartAt = null;
         int? newDurationMinutes = null;
+        string? reason = null;
         if (kind == RecurrenceChangeKind.Adjust)
         {
             if (!DateTime.TryParseExact(
@@ -314,6 +373,14 @@ public partial class MainWindow : Window
                 !int.TryParse(AdjustmentDurationBox.Text.Trim(), out var duration) || duration <= 0)
             {
                 SetOperationStatus("调整需要填写 yyyy-MM-dd HH:mm 格式的新开始时间和大于 0 的分钟数。", isError: true);
+                return;
+            }
+
+            reason = AdjustmentReasonBox.Text.Trim();
+            if (reason.Length == 0)
+            {
+                SetOperationStatus("调整发生项需要填写原因。", isError: true);
+                AdjustmentReasonBox.Focus();
                 return;
             }
 
@@ -329,7 +396,8 @@ public partial class MainWindow : Window
                 kind,
                 scope,
                 newStartAt,
-                newDurationMinutes)));
+                newDurationMinutes,
+                reason)));
         if (!response.Success || response.RecurrenceChangeCard is null)
         {
             SetOperationStatus(response.Message ?? "无法生成修改候选卡片。", isError: true);
@@ -338,6 +406,7 @@ public partial class MainWindow : Window
 
         _candidate = null;
         _recurrenceCandidate = null;
+        _revisionCandidate = null;
         _recurrenceChangeCandidate = response.RecurrenceChangeCard;
         ShowRecurrenceChangeCard(response.RecurrenceChangeCard);
         SetOperationStatus("请核对影响范围；确认后才会写入修改。");
@@ -352,7 +421,8 @@ public partial class MainWindow : Window
 
         var response = await _coreClient.SendAsync(new CoreRequest(
             CoreOperations.ConfirmOfflineStarted,
-            CommitmentId: commitment.Id));
+            CommitmentId: commitment.Id,
+            ExpectedVersion: commitment.Version));
         SetOperationStatus(
             response.Message ?? (response.Success ? "已记录。" : "无法记录线下开始确认。"),
             isError: !response.Success);
@@ -430,16 +500,193 @@ public partial class MainWindow : Window
             .ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
         AdjustmentDurationBox.Text = ((int)(occurrence.EndAt - occurrence.StartAt).TotalMinutes)
             .ToString(CultureInfo.InvariantCulture);
+        AdjustmentReasonBox.Clear();
+        AdjustmentReasonPanel.Visibility = Visibility.Collapsed;
     }
 
     private void CommitmentGrid_SelectionChanged(object sender, SelectionChangedEventArgs eventArgs)
     {
-        ConfirmOfflineButton.IsEnabled = CommitmentGrid.SelectedItem is CommitmentView
+        var selected = CommitmentGrid.SelectedItem as CommitmentView;
+        ConfirmOfflineButton.IsEnabled = selected is
         {
             Kind: CommitmentKind.Offline,
             Phase: CommitmentPhase.ActiveUnsupervised,
             OfflineManuallyConfirmedAt: null
         };
+        ReviseCommitmentButton.IsEnabled = _revisionSource is null && selected is not null &&
+                                           selected.Phase is not (CommitmentPhase.AwaitingReview or CommitmentPhase.Skipped);
+        ViewHistoryButton.IsEnabled = selected is not null;
+    }
+
+    private void ReviseCommitmentButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        {
+            SetOperationStatus("请先在正式状态中选择一条工作承诺。", isError: true);
+            return;
+        }
+
+        EnterRevisionMode(commitment);
+    }
+
+    private void CancelRevisionButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        DiscardRevisionCandidate();
+        LeaveRevisionMode("已取消修订；正式承诺没有改变。");
+    }
+
+    private async void ViewHistoryButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        {
+            SetOperationStatus("请先在正式状态中选择一条工作承诺。", isError: true);
+            return;
+        }
+
+        await ShowCommitmentHistoryAsync(commitment);
+    }
+
+    private void CloseHistoryButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        HistoryPanel.Visibility = Visibility.Collapsed;
+
+    private void EnterRevisionMode(CommitmentView commitment)
+    {
+        _revisionSource = commitment;
+        _candidate = null;
+        _recurrenceCandidate = null;
+        _recurrenceChangeCandidate = null;
+        _revisionCandidate = null;
+        CardBorder.Visibility = Visibility.Collapsed;
+        RevisionReasonBox.Clear();
+        RevisionModeText.Text = $"{DisplayTitle(commitment)} · {commitment.Id.ToString()[..8]}";
+        RevisionModePanel.Visibility = Visibility.Visible;
+        HistoryPanel.Visibility = Visibility.Collapsed;
+        TemplateGroup.IsEnabled = false;
+        RecurrenceGroup.IsEnabled = false;
+        KindBox.IsEnabled = false;
+        ReviseCommitmentButton.IsEnabled = false;
+        var canMoveStart = commitment.Phase == CommitmentPhase.Scheduled;
+        StartDatePicker.IsEnabled = canMoveStart;
+        StartTimeBox.IsEnabled = canMoveStart;
+        PreviewButton.Content = "预览修订";
+        FormHintText.Text = "修改需要一句原因；确认前只生成候选卡，既有历史不会改变。";
+        LoadCommitmentIntoForm(commitment);
+        ContentScrollViewer.ScrollToTop();
+        RevisionReasonBox.Focus();
+        SetOperationStatus("已载入当前正式版本。修改需要的字段，填写原因后预览修订。");
+    }
+
+    private void LeaveRevisionMode(string? status = null)
+    {
+        _revisionSource = null;
+        RevisionModePanel.Visibility = Visibility.Collapsed;
+        RevisionReasonBox.Clear();
+        TemplateGroup.IsEnabled = true;
+        RecurrenceGroup.IsEnabled = true;
+        KindBox.IsEnabled = true;
+        StartDatePicker.IsEnabled = true;
+        StartTimeBox.IsEnabled = true;
+        PreviewButton.Content = "预览一次性承诺";
+        ConfirmButton.Content = "确认，正式成立";
+        KindBox_SelectionChanged(KindBox, null!);
+        CommitmentGrid_SelectionChanged(CommitmentGrid, null!);
+        if (status is not null)
+        {
+            SetOperationStatus(status);
+        }
+    }
+
+    private void DiscardRevisionCandidate()
+    {
+        _revisionCandidate = null;
+        CardText.Text = "";
+        CardBorder.Visibility = Visibility.Collapsed;
+        ConfirmButton.IsEnabled = false;
+    }
+
+    private void LoadCommitmentIntoForm(CommitmentView commitment)
+    {
+        KindBox.SelectedItem = commitment.Kind;
+        StartDatePicker.SelectedDate = commitment.StartAt.LocalDateTime.Date;
+        StartTimeBox.Text = commitment.StartAt.LocalDateTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+        DurationBox.Text = Math.Max(1, (int)(commitment.EndAt - commitment.StartAt).TotalMinutes)
+            .ToString(CultureInfo.InvariantCulture);
+        InputGoalBox.Text = commitment.InputGoal ?? "";
+        OutcomeGoalBox.Text = commitment.OutcomeGoal ?? "";
+        ModeBox.SelectedItem = commitment.SupervisionMode;
+        AppsBox.Text = string.Join(", ", commitment.RelatedAppsOrSites
+            .Where(target => target.Kind == CommitmentTargetKind.Application)
+            .Select(target => target.Value));
+        SitesBox.Text = string.Join(", ", commitment.RelatedAppsOrSites
+            .Where(target => target.Kind == CommitmentTargetKind.Website)
+            .Select(target => target.Value));
+        LoadSupervisionDefaults(
+            commitment.ReminderSettings,
+            commitment.ActivityRules,
+            commitment.RestSettings);
+    }
+
+    private async Task PrepareRevisionAsync()
+    {
+        if (_revisionSource is not { } source)
+        {
+            return;
+        }
+
+        var reason = RevisionReasonBox.Text.Trim();
+        if (reason.Length == 0)
+        {
+            SetOperationStatus("请先用一句话填写修改原因。", isError: true);
+            RevisionReasonBox.Focus();
+            return;
+        }
+
+        if (!TryBuildDraft(out var proposed, out var validationMessage))
+        {
+            SetOperationStatus(validationMessage, isError: true);
+            return;
+        }
+
+        proposed = proposed with { TemplateId = source.TemplateId };
+
+        var response = await _coreClient.SendAsync(new CoreRequest(
+            CoreOperations.PrepareCommitmentRevision,
+            RevisionDraft: new CommitmentRevisionDraft(
+                source.Id,
+                source.Version,
+                proposed,
+                reason)));
+        if (!response.Success || response.CommitmentRevisionCard is null)
+        {
+            SetOperationStatus(response.Message ?? "无法生成修订候选卡片。", isError: true);
+            return;
+        }
+
+        _candidate = null;
+        _recurrenceCandidate = null;
+        _recurrenceChangeCandidate = null;
+        _revisionCandidate = response.CommitmentRevisionCard;
+        ShowRevisionCard(response.CommitmentRevisionCard);
+        SetOperationStatus("请核对变更；只有确认修订后，新版本才会向后生效。");
+    }
+
+    private async Task ShowCommitmentHistoryAsync(CommitmentView commitment)
+    {
+        HistoryHeaderText.Text = $"{DisplayTitle(commitment)} · 历史";
+        HistoryText.Text = "正在连接 Core 历史接口…";
+        HistoryPanel.Visibility = Visibility.Visible;
+        ContentScrollViewer.ScrollToEnd();
+        var response = await _coreClient.SendAsync(new CoreRequest(
+            CoreOperations.GetCommitmentHistory,
+            CommitmentId: commitment.Id));
+        if (!response.Success || response.CommitmentHistory is null)
+        {
+            HistoryText.Text = response.Message ?? "无法读取这条承诺的历史。";
+            SetOperationStatus(HistoryText.Text, isError: true);
+            return;
+        }
+
+        HistoryText.Text = CommitmentHistorySummary.Format(response.CommitmentHistory);
     }
 
     private async Task RefreshSnapshotAsync()
@@ -563,6 +810,7 @@ public partial class MainWindow : Window
 
         _recurrenceCandidate = null;
         _recurrenceChangeCandidate = null;
+        _revisionCandidate = null;
         _candidate = response.Card;
         ShowCard(response.Card);
         SetOperationStatus("请核对卡片；只有确认后才会写入 Core。");
@@ -872,6 +1120,8 @@ public partial class MainWindow : Window
             : "模板候选卡片 · 等待确认";
         CardText.Text = CandidateCardSummary.Format(card);
         CardBorder.Visibility = Visibility.Visible;
+        ConfirmButton.Content = "确认，正式成立";
+        ConfirmButton.IsEnabled = true;
     }
 
     private void ShowRecurrenceCard(RecurrenceCard card)
@@ -898,17 +1148,27 @@ public partial class MainWindow : Window
             {card.ConfirmationNotice}
             """;
         CardBorder.Visibility = Visibility.Visible;
+        ConfirmButton.Content = "确认，正式成立";
+        ConfirmButton.IsEnabled = true;
     }
 
     private void ShowRecurrenceChangeCard(RecurrenceChangeCard card)
     {
         CardHeaderText.Text = $"重复安排修改候选 · {card.AffectedOccurrences.Count} 个发生项";
-        var preview = string.Join(Environment.NewLine, card.AffectedOccurrences.Take(12).Select(item =>
-            card.Kind == RecurrenceChangeKind.Skip
-                ? $"• {item.Date:yyyy-MM-dd}：{item.BeforeStatus} → 已跳过"
-                : $"• {item.Date:yyyy-MM-dd}：{item.BeforeStartAt.LocalDateTime:MM-dd HH:mm}–{item.BeforeEndAt.LocalDateTime:HH:mm} → {item.AfterStartAt.LocalDateTime:MM-dd HH:mm}–{item.AfterEndAt.LocalDateTime:HH:mm}"));
-        CardText.Text = $"作用范围：{card.Scope}\n{preview}\n\n{card.ConfirmationNotice}";
+        CardText.Text = RecurrenceChangeSummary.Format(card);
         CardBorder.Visibility = Visibility.Visible;
+        ConfirmButton.Content = "确认修改";
+        ConfirmButton.IsEnabled = true;
+    }
+
+    private void ShowRevisionCard(CommitmentRevisionCard card)
+    {
+        CardHeaderText.Text = $"承诺修订候选 · v{card.FromVersion} → v{card.ToVersion}";
+        CardText.Text = CommitmentRevisionSummary.Format(card);
+        CardBorder.Visibility = Visibility.Visible;
+        ConfirmButton.Content = "确认修订";
+        ConfirmButton.IsEnabled = true;
+        CardBorder.BringIntoView();
     }
 
     private void SetOperationStatus(string message, bool isError = false)
@@ -921,6 +1181,14 @@ public partial class MainWindow : Window
 
     private static string DisplayTitle(CommitmentView commitment) =>
         commitment.InputGoal ?? commitment.OutcomeGoal ?? "未命名承诺";
+
+    private static string FormatActionableTarget(CommitmentTarget target)
+    {
+        const int maxLength = 26;
+        return target.Value.Length <= maxLength
+            ? target.Value
+            : $"{target.Value[..(maxLength - 1)]}…";
+    }
 
     private static string? NullIfWhiteSpace(string value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -947,7 +1215,8 @@ public partial class MainWindow : Window
     private async void ReturnNowButton_Click(object sender, RoutedEventArgs eventArgs) =>
         await SendActiveOperationAsync(new CoreRequest(
             CoreOperations.RecordReturnIntent,
-            CommitmentId: _snapshot?.ActiveComputerCommitmentId));
+            CommitmentId: _snapshot?.ActiveComputerCommitmentId,
+            ExpectedVersion: _snapshot?.ActiveSupervision?.CommitmentVersion));
 
     private async void CurrentRelatedButton_Click(object sender, RoutedEventArgs eventArgs) =>
         await ClassifyCurrentActivityAsync(ActivityClassification.Related);
@@ -967,24 +1236,36 @@ public partial class MainWindow : Window
             return;
         }
 
+        var state = _snapshot?.ActiveSupervision;
+        if (state?.ActionableTarget is null || state.ActivityStateStartedAt is null)
+        {
+            SetOperationStatus("当前没有可确认的外部活动；请回到要分类的软件后再试。", isError: true);
+            return;
+        }
+
         await SendActiveOperationAsync(new CoreRequest(
             CoreOperations.ClassifyCurrentActivity,
             CommitmentId: _snapshot?.ActiveComputerCommitmentId,
             Classification: classification,
-            RuleScope: scope));
+            RuleScope: scope,
+            ExpectedVersion: state.CommitmentVersion,
+            ActivityTarget: state.ActionableTarget,
+            ActivityStateStartedAt: state.ActivityStateStartedAt));
     }
 
     private async void AcceptRestButton_Click(object sender, RoutedEventArgs eventArgs) =>
         await SendActiveOperationAsync(new CoreRequest(
             CoreOperations.RespondToRestPrompt,
             CommitmentId: _snapshot?.ActiveComputerCommitmentId,
-            IsResting: true));
+            IsResting: true,
+            ExpectedVersion: _snapshot?.ActiveSupervision?.CommitmentVersion));
 
     private async void DenyRestButton_Click(object sender, RoutedEventArgs eventArgs) =>
         await SendActiveOperationAsync(new CoreRequest(
             CoreOperations.RespondToRestPrompt,
             CommitmentId: _snapshot?.ActiveComputerCommitmentId,
-            IsResting: false));
+            IsResting: false,
+            ExpectedVersion: _snapshot?.ActiveSupervision?.CommitmentVersion));
 
     private async void StartTimedRestButton_Click(object sender, RoutedEventArgs eventArgs)
     {
@@ -1007,7 +1288,8 @@ public partial class MainWindow : Window
         await SendActiveOperationAsync(new CoreRequest(
             CoreOperations.StartTimedRest,
             CommitmentId: _snapshot?.ActiveComputerCommitmentId,
-            RestEndAt: new DateTimeOffset(localEnd)));
+            RestEndAt: new DateTimeOffset(localEnd),
+            ExpectedVersion: _snapshot?.ActiveSupervision?.CommitmentVersion));
     }
 
     private void PresentationMode_Changed(object sender, RoutedEventArgs eventArgs)
@@ -1059,6 +1341,19 @@ public partial class MainWindow : Window
             : $" · 限时休息至 {state.ActiveRest.EndAt.ToLocalTime():HH:mm}";
         ActiveSupervisionText.Text =
             $"{DisplayTitle(commitment)} · 活动：{classification}{(state.IsIdle ? " / 空闲" : "")} · {deviation}{rest}";
+        var actionableLabel = state.ActionableTarget is null
+            ? null
+            : FormatActionableTarget(state.ActionableTarget);
+        CurrentRelatedButton.ToolTip = state.ActionableTarget?.Value;
+        CurrentDistractingButton.ToolTip = state.ActionableTarget?.Value;
+        CurrentRelatedButton.Content = actionableLabel is null
+            ? "没有可确认的外部活动"
+            : $"将 {actionableLabel} 标为相关";
+        CurrentDistractingButton.Content = actionableLabel is null
+            ? "没有可确认的外部活动"
+            : $"将 {actionableLabel} 标为分心";
+        CurrentRelatedButton.IsEnabled = actionableLabel is not null;
+        CurrentDistractingButton.IsEnabled = actionableLabel is not null;
         AcceptRestButton.Visibility = state.PendingPrompt == SupervisionPromptKind.ConfirmRest
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -1102,6 +1397,7 @@ public partial class MainWindow : Window
         if (_soundGate.Consume(
                 reminder,
                 commitment.Id,
+                state.CommitmentVersion,
                 snapshot.Now,
                 presentation.SuppressSound))
         {
@@ -1113,6 +1409,10 @@ public partial class MainWindow : Window
     {
         _snapshot = null;
         SupervisionPanel.Visibility = Visibility.Collapsed;
+        CurrentRelatedButton.Content = "本次活动相关";
+        CurrentDistractingButton.Content = "本次活动分心";
+        CurrentRelatedButton.IsEnabled = false;
+        CurrentDistractingButton.IsEnabled = false;
         ReminderBubble.Visibility = Visibility.Collapsed;
         ReminderMarkerText.Visibility = Visibility.Collapsed;
         _reminderOverlay.Hide();
@@ -1233,6 +1533,167 @@ public static class TemplatePreviewDraft
             ReminderSettings: reminders,
             ActivityRules: rules,
             RestSettings: rest);
+}
+
+public static class CommitmentRevisionSummary
+{
+    public static string Format(CommitmentRevisionCard card)
+    {
+        var changes = ChangedLines(card.Before, card.After).ToArray();
+        var changeText = changes.Length == 0
+            ? "没有可见变化（请返回修改表单）。"
+            : string.Join(Environment.NewLine, changes.Select(line => $"• {line}"));
+        return $"""
+            修改原因：{card.Reason}
+            版本：v{card.FromVersion} → v{card.ToVersion}
+
+            变更：
+            {changeText}
+
+            确认后立即向后生效；旧版本及此前的活动、偏离、提醒、回应和纠正都会保留。
+
+            {card.ConfirmationNotice}
+            """;
+    }
+
+    private static IEnumerable<string> ChangedLines(CommitmentCard before, CommitmentCard after)
+    {
+        if (before.StartAt != after.StartAt || before.EndAt != after.EndAt)
+        {
+            yield return $"时间：{before.StartAt.LocalDateTime:yyyy-MM-dd HH:mm}–{before.EndAt.LocalDateTime:HH:mm} → {after.StartAt.LocalDateTime:yyyy-MM-dd HH:mm}–{after.EndAt.LocalDateTime:HH:mm}";
+        }
+
+        if (before.InputGoal != after.InputGoal)
+        {
+            yield return $"投入目标：{before.InputGoal ?? "未设置"} → {after.InputGoal ?? "未设置"}";
+        }
+
+        if (before.OutcomeGoal != after.OutcomeGoal)
+        {
+            yield return $"成果目标：{before.OutcomeGoal ?? "未设置"} → {after.OutcomeGoal ?? "未设置"}";
+        }
+
+        if (!before.RelatedAppsOrSites.SequenceEqual(after.RelatedAppsOrSites))
+        {
+            yield return $"相关项目：{Targets(before.RelatedAppsOrSites)} → {Targets(after.RelatedAppsOrSites)}";
+        }
+
+        if (before.SupervisionMode != after.SupervisionMode)
+        {
+            yield return $"监督模式：{before.SupervisionMode} → {after.SupervisionMode}";
+        }
+
+        if (before.ReminderSettings != after.ReminderSettings)
+        {
+            yield return "提醒设置已修改";
+        }
+
+        if (!before.ActivityRules.SequenceEqual(after.ActivityRules))
+        {
+            yield return "活动分类规则已修改";
+        }
+
+        if (before.RestSettings != after.RestSettings)
+        {
+            yield return "休息设置已修改";
+        }
+    }
+
+    private static string Targets(IReadOnlyList<CommitmentTarget> targets) => targets.Count == 0
+        ? "无"
+        : string.Join("、", targets.Select(target => target.Value));
+}
+
+public static class CommitmentHistorySummary
+{
+    public static string Format(CommitmentHistoryView history)
+    {
+        var lines = new List<string>
+        {
+            $"当前版本：v{history.CurrentVersion}",
+            "",
+            "版本"
+        };
+        foreach (var version in history.Versions.OrderByDescending(version => version.Version))
+        {
+            AppendVersion(lines, version);
+        }
+        AppendEvents(lines, "活动区段", history.ActivitySegments.Count,
+            history.ActivitySegments.OrderByDescending(item => item.StartAt).Take(12).Select(item =>
+                $"• {item.StartAt.ToLocalTime():MM-dd HH:mm:ss}–{item.EndAt.ToLocalTime():HH:mm:ss} · v{item.CommitmentVersion} · {item.EffectiveClassification?.ToString() ?? item.Availability.ToString()}{(item.Target is null ? "" : $" · {item.Target.Value}")}"));
+        AppendEvents(lines, "提醒", history.Reminders.Count,
+            history.Reminders.OrderByDescending(item => item.CreatedAt).Take(12).Select(item =>
+                $"• {item.CreatedAt.ToLocalTime():MM-dd HH:mm:ss} · v{item.CommitmentVersion} · {item.Kind} · {item.Message}"));
+        AppendEvents(lines, "分类纠正", history.Corrections.Count,
+            history.Corrections.OrderByDescending(item => item.CorrectedAt).Take(12).Select(item =>
+                $"• {item.CorrectedAt.ToLocalTime():MM-dd HH:mm:ss} · v{item.CommitmentVersion} · {item.Scope} · {item.Target.Value} · {item.OriginalClassification} → {item.CorrectedClassification}{(string.IsNullOrWhiteSpace(item.Note) ? "" : $" · {item.Note}")}"));
+        AppendEvents(lines, "回应", history.Responses.Count,
+            history.Responses.OrderByDescending(item => item.RecordedAt).Take(12).Select(item =>
+                $"• {item.RecordedAt.ToLocalTime():MM-dd HH:mm:ss} · v{item.CommitmentVersion} · {item.Kind}{(string.IsNullOrWhiteSpace(item.Note) ? "" : $" · {item.Note}")}"));
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static void AppendVersion(List<string> lines, CommitmentRevisionVersionView version)
+    {
+        var snapshot = version.Snapshot;
+        var targets = snapshot.RelatedAppsOrSites.Count == 0
+            ? "无"
+            : string.Join("、", snapshot.RelatedAppsOrSites.Select(FormatTarget));
+        var rules = snapshot.ActivityRules.Count == 0
+            ? "无"
+            : string.Join("、", snapshot.ActivityRules.Select(rule =>
+                $"{FormatTarget(rule.Target)}={rule.Classification}"));
+        var reminders = snapshot.ReminderSettings;
+        var rest = snapshot.RestSettings;
+
+        lines.Add($"• v{version.Version} · {version.EffectiveFrom.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz} 起 · {version.Reason}");
+        lines.Add($"  时间：{snapshot.StartAt.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz} → {snapshot.EndAt.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}");
+        lines.Add($"  目标：投入={ValueOrNone(snapshot.InputGoal)}；成果={ValueOrNone(snapshot.OutcomeGoal)}");
+        lines.Add($"  类型/模式：{snapshot.Kind}/{snapshot.SupervisionMode}；关联目标：{targets}");
+        lines.Add($"  提醒：开始={OnOff(reminders.StartReminderEnabled)}；本地偏离={reminders.LocalDeviationMinutes}分；首次移动={reminders.FirstMobileDeviationMinutes}分；移动重复={reminders.MobileRepeatMinutes}分；最多={reminders.MaxMobileReminders}；声音={OnOff(reminders.SoundEnabled)}；安静={OnOff(reminders.QuietPresentation)}");
+        lines.Add($"  活动规则：{rules}");
+        lines.Add($"  休息：空闲询问={rest.IdlePromptMinutes}分；默认总时长={rest.DefaultTotalRestMinutes}分");
+    }
+
+    private static string FormatTarget(CommitmentTarget target) => $"{target.Kind}:{target.Value}";
+
+    private static string ValueOrNone(string? value) => string.IsNullOrWhiteSpace(value) ? "无" : value;
+
+    private static string OnOff(bool value) => value ? "开" : "关";
+
+    private static void AppendEvents(
+        List<string> lines,
+        string title,
+        int count,
+        IEnumerable<string> values)
+    {
+        lines.Add("");
+        lines.Add($"{title}（{count}）");
+        var entries = values.ToArray();
+        lines.AddRange(entries.Length == 0 ? ["• 暂无"] : entries);
+        if (count > entries.Length)
+        {
+            lines.Add($"• 另有 {count - entries.Length} 条；正式记录仍完整保留。 ");
+        }
+    }
+}
+
+public static class RecurrenceChangeSummary
+{
+    public static string Format(RecurrenceChangeCard card)
+    {
+        var preview = string.Join(Environment.NewLine, card.AffectedOccurrences.Take(12).Select(item =>
+            card.Kind == RecurrenceChangeKind.Skip
+                ? $"• {item.Date:yyyy-MM-dd}：{item.BeforeStatus} → 已跳过"
+                : $"• {item.Date:yyyy-MM-dd} · v{item.BeforeVersion} → v{item.AfterVersion}：{item.BeforeStartAt.LocalDateTime:MM-dd HH:mm}–{item.BeforeEndAt.LocalDateTime:HH:mm} → {item.AfterStartAt.LocalDateTime:MM-dd HH:mm}–{item.AfterEndAt.LocalDateTime:HH:mm}"));
+        var omitted = card.AffectedOccurrences.Count > 12
+            ? $"{Environment.NewLine}• 另有 {card.AffectedOccurrences.Count - 12} 个发生项"
+            : "";
+        var reason = card.Kind == RecurrenceChangeKind.Adjust
+            ? $"{Environment.NewLine}调整原因：{card.Reason}"
+            : "";
+        return $"作用范围：{card.Scope}{reason}{Environment.NewLine}{preview}{omitted}{Environment.NewLine}{Environment.NewLine}{card.ConfirmationNotice}";
+    }
 }
 
 internal static class GentleReminderSound

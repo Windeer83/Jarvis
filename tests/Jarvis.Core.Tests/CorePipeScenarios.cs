@@ -174,26 +174,31 @@ public sealed class CorePipeScenarios
                 commitmentId,
                 new ActivityRule(
                     new CommitmentTarget(CommitmentTargetKind.Application, "games.exe"),
-                    ActivityClassification.Distracting))));
+                    ActivityClassification.Distracting)),
+            ExpectedVersion: 1));
         Assert.True(saved.Success);
 
         await module.TickAsync();
+        var version = (await module.GetSnapshotAsync()).Commitments.Single().Version;
         var returned = await SendAsync(pipeName, new CoreRequest(
             CoreOperations.RecordReturnIntent,
-            CommitmentId: commitmentId));
+            CommitmentId: commitmentId,
+            ExpectedVersion: version));
         Assert.True(returned.Success);
         Assert.Equal(start, returned.Snapshot!.ActiveSupervision!.ReturnIntentAt);
 
         var missingEnd = await SendAsync(pipeName, new CoreRequest(
             CoreOperations.StartTimedRest,
-            CommitmentId: commitmentId));
+            CommitmentId: commitmentId,
+            ExpectedVersion: version));
         Assert.False(missingEnd.Success);
         Assert.Equal("rest_end_required", missingEnd.ErrorCode);
 
         var startedRest = await SendAsync(pipeName, new CoreRequest(
             CoreOperations.StartTimedRest,
             CommitmentId: commitmentId,
-            RestEndAt: start.AddMinutes(10)));
+            RestEndAt: start.AddMinutes(10),
+            ExpectedVersion: version));
         Assert.True(startedRest.Success);
         Assert.Equal(start.AddMinutes(10),
             startedRest.Snapshot!.ActiveSupervision!.ActiveRest!.EndAt);

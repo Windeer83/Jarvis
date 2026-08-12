@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Jarvis.Contracts;
 using Xunit;
 
 namespace Jarvis.Core.Tests;
@@ -81,7 +82,7 @@ public sealed class SqliteMigrationScenarios
         await connection.OpenAsync();
         await using var version = connection.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
-        Assert.Equal(3L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal(4L, (long)(await version.ExecuteScalarAsync())!);
         await using var planningTables = connection.CreateCommand();
         planningTables.CommandText = """
             SELECT count(*)
@@ -112,6 +113,76 @@ public sealed class SqliteMigrationScenarios
         await using var columns = connection.CreateCommand();
         columns.CommandText = "SELECT count(*) FROM pragma_table_info('commitments') WHERE name = 'template_id';";
         Assert.Equal(0L, (long)(await columns.ExecuteScalarAsync())!);
+    }
+
+    [Fact]
+    public async Task Version_three_database_backfills_complete_version_one_history_and_reopens_idempotently()
+    {
+        using var database = new TemporaryDatabase();
+        await CreateVersionThreeDatabaseAsync(database.Path);
+        var clock = new FakeClock(new DateTimeOffset(2026, 8, 12, 8, 0, 0, TimeSpan.FromHours(8)));
+
+        await using (var module = await SupervisionModule.OpenAsync(
+                         database.Path, clock, new FakeActivitySource(), new FakeReminderSink()))
+        {
+            await AssertVersionThreeDataWasBackfilledAsync(module);
+        }
+
+        await AssertUserVersionAsync(database.Path, 4);
+
+        await using (var reopened = await SupervisionModule.OpenAsync(
+                         database.Path, clock, new FakeActivitySource(), new FakeReminderSink()))
+        {
+            await AssertVersionThreeDataWasBackfilledAsync(reopened);
+        }
+
+        await AssertUserVersionAsync(database.Path, 4);
+    }
+
+    [Fact]
+    public async Task Failed_version_four_migration_rolls_back_columns_tables_and_user_version()
+    {
+        using var database = new TemporaryDatabase();
+        await CreateVersionThreeDatabaseAsync(database.Path, createVersionFourConflict: true);
+        await using var connection = new SqliteConnection($"Data Source={database.Path};Pooling=False");
+        await connection.OpenAsync();
+        await using var migration = (SqliteTransaction)await connection.BeginTransactionAsync();
+
+        await Assert.ThrowsAsync<SqliteException>(() => SqliteCommitmentStore.MigrateToVersionFourAsync(
+            connection, migration, CancellationToken.None));
+        await migration.RollbackAsync();
+
+        await using var version = connection.CreateCommand();
+        version.CommandText = "PRAGMA user_version;";
+        Assert.Equal(3L, (long)(await version.ExecuteScalarAsync())!);
+
+        await using var addedColumns = connection.CreateCommand();
+        addedColumns.CommandText = """
+            SELECT
+                (SELECT count(*) FROM pragma_table_info('commitments')
+                    WHERE name = 'current_version')
+              + (SELECT count(*) FROM pragma_table_info('reminder_notices')
+                    WHERE name = 'commitment_version')
+              + (SELECT count(*) FROM pragma_table_info('activity_corrections')
+                    WHERE name IN ('commitment_version', 'activity_segment_id'));
+            """;
+        Assert.Equal(0L, (long)(await addedColumns.ExecuteScalarAsync())!);
+
+        await using var newObjects = connection.CreateCommand();
+        newObjects.CommandText = """
+            SELECT count(*) FROM sqlite_master
+            WHERE name IN (
+                'commitment_versions', 'commitment_version_targets', 'commitment_version_rules',
+                'activity_segments', 'ix_activity_segments_commitment_time');
+            """;
+        Assert.Equal(0L, (long)(await newObjects.ExecuteScalarAsync())!);
+
+        await using var deliberateConflict = connection.CreateCommand();
+        deliberateConflict.CommandText = """
+            SELECT count(*) FROM sqlite_master
+            WHERE type = 'table' AND name = 'supervision_responses';
+            """;
+        Assert.Equal(1L, (long)(await deliberateConflict.ExecuteScalarAsync())!);
     }
 
     private static async Task CreateVersionOneDatabaseAsync(
@@ -239,5 +310,182 @@ public sealed class SqliteMigrationScenarios
             PRAGMA user_version = 2;
             """;
         await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task CreateVersionThreeDatabaseAsync(
+        string path,
+        bool createVersionFourConflict = false)
+    {
+        await CreateVersionTwoDatabaseAsync(path);
+        await using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            ALTER TABLE commitments ADD COLUMN sound_enabled INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE commitments ADD COLUMN quiet_presentation INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE commitments ADD COLUMN is_skipped INTEGER NOT NULL DEFAULT 0;
+
+            CREATE TABLE commitment_templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind INTEGER NOT NULL,
+                duration_minutes INTEGER NOT NULL,
+                input_goal TEXT NULL,
+                outcome_goal TEXT NULL,
+                supervision_mode INTEGER NOT NULL,
+                start_reminder_enabled INTEGER NOT NULL,
+                local_deviation_minutes INTEGER NOT NULL,
+                first_mobile_deviation_minutes INTEGER NOT NULL,
+                mobile_repeat_minutes INTEGER NOT NULL,
+                max_mobile_reminders INTEGER NOT NULL,
+                sound_enabled INTEGER NOT NULL DEFAULT 1,
+                quiet_presentation INTEGER NOT NULL DEFAULT 0,
+                rest_idle_prompt_minutes INTEGER NOT NULL,
+                rest_total_minutes INTEGER NOT NULL,
+                created_at_utc TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL,
+                archived_at_utc TEXT NULL
+            );
+            CREATE TABLE template_targets (
+                template_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                kind INTEGER NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (template_id, ordinal)
+            );
+            CREATE TABLE recurrence_plans (
+                id TEXT PRIMARY KEY,
+                template_id TEXT NULL,
+                kind INTEGER NOT NULL,
+                start_date TEXT NULL,
+                end_date TEXT NULL,
+                confirmed_at_utc TEXT NOT NULL
+            );
+            CREATE TABLE recurrence_weekdays (
+                plan_id TEXT NOT NULL,
+                weekday INTEGER NOT NULL,
+                PRIMARY KEY (plan_id, weekday)
+            );
+            CREATE TABLE recurrence_selected_dates (
+                plan_id TEXT NOT NULL,
+                selected_date TEXT NOT NULL,
+                PRIMARY KEY (plan_id, selected_date)
+            );
+            CREATE TABLE recurrence_occurrences (
+                plan_id TEXT NOT NULL,
+                commitment_id TEXT NOT NULL UNIQUE,
+                occurrence_date TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                PRIMARY KEY (plan_id, ordinal)
+            );
+            CREATE INDEX ix_recurrence_occurrences_commitment
+                ON recurrence_occurrences(commitment_id);
+
+            UPDATE commitments SET
+                input_goal = 'v3 commitment',
+                outcome_goal = 'migration remains complete',
+                template_id = '22222222-2222-2222-2222-222222222222',
+                idle_prompt_minutes = 12,
+                default_total_rest_minutes = 18,
+                sound_enabled = 0,
+                quiet_presentation = 1;
+            INSERT INTO activity_rules VALUES (
+                2, '11111111-1111-1111-1111-111111111111', 0,
+                'Excel.exe', 'excel.exe', 0);
+            INSERT INTO commitment_templates VALUES (
+                '22222222-2222-2222-2222-222222222222', 'v3 template', 0, 60,
+                'template input', 'template outcome', 0, 1, 6, 21, 22, 4,
+                0, 1, 13, 19,
+                '2026-08-11T23:00:00.0000000+00:00',
+                '2026-08-11T23:30:00.0000000+00:00', NULL);
+            INSERT INTO template_targets VALUES (
+                '22222222-2222-2222-2222-222222222222', 0, 0, 'Excel.exe');
+            INSERT INTO activity_rules VALUES (
+                1, '22222222-2222-2222-2222-222222222222', 0,
+                'Excel.exe', 'excel.exe', 0);
+            INSERT INTO recurrence_plans VALUES (
+                '33333333-3333-3333-3333-333333333333',
+                '22222222-2222-2222-2222-222222222222', 2,
+                NULL, NULL, '2026-08-12T00:00:00.0000000+00:00');
+            INSERT INTO recurrence_selected_dates VALUES (
+                '33333333-3333-3333-3333-333333333333', '2026-08-12');
+            INSERT INTO recurrence_occurrences VALUES (
+                '33333333-3333-3333-3333-333333333333',
+                '11111111-1111-1111-1111-111111111111', '2026-08-12', 0);
+            PRAGMA user_version = 3;
+            """;
+        await command.ExecuteNonQueryAsync();
+
+        if (createVersionFourConflict)
+        {
+            command.CommandText = "CREATE TABLE supervision_responses (preexisting TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static async Task AssertVersionThreeDataWasBackfilledAsync(SupervisionModule module)
+    {
+        var snapshot = await module.GetSnapshotAsync();
+        var commitment = Assert.Single(snapshot.Commitments);
+        Assert.Equal(Guid.Parse("11111111-1111-1111-1111-111111111111"), commitment.Id);
+        Assert.Equal(1, commitment.Version);
+        Assert.Equal("v3 commitment", commitment.InputGoal);
+        Assert.Equal("migration remains complete", commitment.OutcomeGoal);
+        Assert.Equal(new ReminderSettings(true, 5, 20, 20, 3, false, true), commitment.ReminderSettings);
+        Assert.Equal(new RestSettings(12, 18), commitment.RestSettings);
+        Assert.Equal(Guid.Parse("22222222-2222-2222-2222-222222222222"), commitment.TemplateId);
+        var target = Assert.Single(commitment.RelatedAppsOrSites);
+        Assert.Equal(new CommitmentTarget(CommitmentTargetKind.Application, "Excel.exe"), target);
+        var rule = Assert.Single(commitment.ActivityRules);
+        Assert.Equal(new ActivityRule(target, ActivityClassification.Related), rule);
+
+        var historyResult = await module.GetCommitmentHistoryAsync(commitment.Id);
+        Assert.True(historyResult.Success, historyResult.Message);
+        var history = historyResult.Value!;
+        Assert.Equal(1, history.CurrentVersion);
+        var version = Assert.Single(history.Versions);
+        Assert.Equal(1, version.Version);
+        Assert.Equal(commitment.ConfirmedAt, version.EffectiveFrom);
+        Assert.Equal(commitment.ConfirmedAt, version.ConfirmedAt);
+        Assert.False(string.IsNullOrWhiteSpace(version.Reason));
+        Assert.Equal(commitment.Kind, version.Snapshot.Kind);
+        Assert.Equal(commitment.StartAt, version.Snapshot.StartAt);
+        Assert.Equal(commitment.EndAt, version.Snapshot.EndAt);
+        Assert.Equal(commitment.InputGoal, version.Snapshot.InputGoal);
+        Assert.Equal(commitment.OutcomeGoal, version.Snapshot.OutcomeGoal);
+        Assert.Equal(commitment.SupervisionMode, version.Snapshot.SupervisionMode);
+        Assert.Equal(commitment.ReminderSettings, version.Snapshot.ReminderSettings);
+        Assert.Equal(commitment.RestSettings, version.Snapshot.RestSettings);
+        Assert.Equal(commitment.TemplateId, version.Snapshot.TemplateId);
+        Assert.Equal(commitment.RelatedAppsOrSites, version.Snapshot.RelatedAppsOrSites);
+        Assert.Equal(commitment.ActivityRules, version.Snapshot.ActivityRules);
+
+        var template = Assert.Single(snapshot.Templates);
+        Assert.Equal(Guid.Parse("22222222-2222-2222-2222-222222222222"), template.Id);
+        Assert.Equal("v3 template", template.Name);
+        Assert.Equal(new ReminderSettings(true, 6, 21, 22, 4, false, true), template.ReminderSettings);
+        Assert.Equal(new RestSettings(13, 19), template.RestSettings);
+        Assert.Equal(new ActivityRule(
+            new CommitmentTarget(CommitmentTargetKind.Application, "Excel.exe"),
+            ActivityClassification.Related), Assert.Single(template.ActivityRules));
+
+        var plan = Assert.Single(snapshot.RecurrencePlans);
+        Assert.Equal(Guid.Parse("33333333-3333-3333-3333-333333333333"), plan.Id);
+        Assert.Equal(template.Id, plan.TemplateId);
+        Assert.Equal(RecurrenceKind.SelectedDates, plan.Pattern.Kind);
+        Assert.Equal(new DateOnly(2026, 8, 12), Assert.Single(plan.Pattern.SelectedDates!));
+        var occurrence = Assert.Single(plan.Occurrences);
+        Assert.Equal(commitment.Id, occurrence.CommitmentId);
+        Assert.Equal(new DateOnly(2026, 8, 12), occurrence.Date);
+        Assert.Equal(RecurrenceOccurrenceStatus.Active, occurrence.Status);
+    }
+
+    private static async Task AssertUserVersionAsync(string path, long expected)
+    {
+        await using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA user_version;";
+        Assert.Equal(expected, (long)(await command.ExecuteScalarAsync())!);
     }
 }

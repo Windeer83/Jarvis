@@ -30,6 +30,7 @@ public sealed class SupervisionModule : IAsyncDisposable
     private CommitmentCard? _candidate;
     private RecurrenceCard? _recurrenceCandidate;
     private (RecurrenceChangeCard Card, RecurrenceChangeRequest Request)? _recurrenceChangeCandidate;
+    private CommitmentRevisionCard? _revisionCandidate;
     private ActivityObservation? _latestActivity;
     private bool _disposed;
 
@@ -81,6 +82,7 @@ public sealed class SupervisionModule : IAsyncDisposable
             _candidate = normalized.Value;
             _recurrenceCandidate = null;
             _recurrenceChangeCandidate = null;
+            _revisionCandidate = null;
         }
 
         return Task.FromResult(normalized);
@@ -240,6 +242,7 @@ public sealed class SupervisionModule : IAsyncDisposable
             _candidate = null;
             _recurrenceCandidate = card;
             _recurrenceChangeCandidate = null;
+            _revisionCandidate = null;
         }
 
         return Task.FromResult(SupervisionResult<RecurrenceCard>.Ok(card));
@@ -304,6 +307,7 @@ public sealed class SupervisionModule : IAsyncDisposable
                     _candidate = null;
                     _recurrenceCandidate = null;
                     _recurrenceChangeCandidate = (result.Value, request);
+                    _revisionCandidate = null;
                 }
             }
 
@@ -322,16 +326,16 @@ public sealed class SupervisionModule : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            RecurrenceChangeRequest? request;
+            (RecurrenceChangeCard Card, RecurrenceChangeRequest Request)? candidate;
             lock (_candidateLock)
             {
-                request = _recurrenceChangeCandidate is { } candidate &&
-                          candidate.Card.CandidateId == candidateId
-                    ? candidate.Request
+                candidate = _recurrenceChangeCandidate is { } current &&
+                            current.Card.CandidateId == candidateId
+                    ? current
                     : null;
             }
 
-            if (request is null)
+            if (candidate is null)
             {
                 return SupervisionResult<RecurrencePlanView>.Fail(
                     "candidate_not_found", "重复安排修改候选已失效，请重新预览。");
@@ -339,7 +343,8 @@ public sealed class SupervisionModule : IAsyncDisposable
 
             var commitments = await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false);
             var result = await _store.ChangeRecurrenceAsync(
-                request, commitments, _clock.Now, cancellationToken).ConfigureAwait(false);
+                candidate.Value.Request, candidate.Value.Card, commitments, _clock.Now, cancellationToken)
+                .ConfigureAwait(false);
             if (result.Success)
             {
                 lock (_candidateLock)
@@ -406,8 +411,180 @@ public sealed class SupervisionModule : IAsyncDisposable
         }
     }
 
+    public async Task<SupervisionResult<CommitmentRevisionCard>> PrepareCommitmentRevisionAsync(
+        CommitmentRevisionDraft draft,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var reason = NormalizeOptional(draft.Reason);
+        if (reason is null)
+        {
+            return SupervisionResult<CommitmentRevisionCard>.Fail(
+                "revision_reason_required", "承诺修订必须保存自然语言原因。");
+        }
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var current = (await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                .SingleOrDefault(item => item.Id == draft.CommitmentId);
+            if (current is null)
+            {
+                return SupervisionResult<CommitmentRevisionCard>.Fail(
+                    "commitment_not_found", "没有找到这条工作承诺。");
+            }
+
+            if (current.Version != draft.ExpectedVersion)
+            {
+                return SupervisionResult<CommitmentRevisionCard>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
+
+            var now = _clock.Now;
+            if (current.IsSkipped || now >= current.EndAt)
+            {
+                return SupervisionResult<CommitmentRevisionCard>.Fail(
+                    "revision_history_immutable", "已结束或跳过的承诺属于历史记录，不能修订。");
+            }
+
+            var normalized = Normalize(draft.Proposed with { TemplateId = current.TemplateId });
+            if (!normalized.Success || normalized.Value is null)
+            {
+                return SupervisionResult<CommitmentRevisionCard>.Fail(
+                    normalized.ErrorCode!, normalized.Message!);
+            }
+
+            var after = normalized.Value;
+            if (after.Kind != current.Kind || after.TemplateId != current.TemplateId)
+            {
+                return SupervisionResult<CommitmentRevisionCard>.Fail(
+                    "revision_identity_immutable", "承诺类型和模板来源不能通过修订改变。");
+            }
+
+            if (now >= current.StartAt && after.StartAt != current.StartAt)
+            {
+                return SupervisionResult<CommitmentRevisionCard>.Fail(
+                    "revision_history_immutable", "已经开始的承诺不能倒改开始时间。");
+            }
+
+            if (now < current.StartAt && after.StartAt <= now || after.EndAt <= now)
+            {
+                return SupervisionResult<CommitmentRevisionCard>.Fail(
+                    "revision_history_immutable", "修订后的监督时段不能覆盖已经发生的时间。");
+            }
+
+            var rules = await _store.ReadActivityRulesAsync(
+                ActivityRuleScope.Commitment, current.Id, cancellationToken).ConfigureAwait(false);
+            var before = ToCard(current, rules);
+            var candidate = new CommitmentRevisionCard(
+                Guid.NewGuid(), current.Id, current.Version, current.Version + 1, now,
+                before, after, reason,
+                "尚未写入；确认后从确认时刻起使用新版本，旧版本和既有监督记录继续保留。");
+            lock (_candidateLock)
+            {
+                _candidate = null;
+                _recurrenceCandidate = null;
+                _recurrenceChangeCandidate = null;
+                _revisionCandidate = candidate;
+            }
+            return SupervisionResult<CommitmentRevisionCard>.Ok(candidate);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<SupervisionResult<CommitmentView>> ConfirmCommitmentRevisionAsync(
+        Guid candidateId,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            CommitmentRevisionCard? candidate;
+            lock (_candidateLock)
+            {
+                candidate = _revisionCandidate?.CandidateId == candidateId
+                    ? _revisionCandidate
+                    : null;
+            }
+            if (candidate is null)
+            {
+                return SupervisionResult<CommitmentView>.Fail(
+                    "candidate_not_found", "修订候选已失效，请重新预览。");
+            }
+
+            var now = _clock.Now;
+            var confirmedCandidate = candidate with { EffectiveFrom = now };
+            if (confirmedCandidate.After.EndAt <= now ||
+                confirmedCandidate.Before.StartAt <= now &&
+                confirmedCandidate.After.StartAt != confirmedCandidate.Before.StartAt)
+            {
+                return SupervisionResult<CommitmentView>.Fail(
+                    "revision_history_immutable", "当前时刻已变化，请重新预览修订。");
+            }
+
+            var result = await _store.ConfirmRevisionAsync(confirmedCandidate, cancellationToken)
+                .ConfigureAwait(false);
+            if (!result.Success || result.Value is null)
+            {
+                return SupervisionResult<CommitmentView>.Fail(result.ErrorCode!, result.Message!);
+            }
+
+            lock (_candidateLock)
+            {
+                if (_revisionCandidate?.CandidateId == candidateId)
+                {
+                    _revisionCandidate = null;
+                }
+            }
+            return SupervisionResult<CommitmentView>.Ok(
+                ToView(result.Value, now, confirmedCandidate.After.ActivityRules));
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<SupervisionResult<CommitmentHistoryView>> GetCommitmentHistoryAsync(
+        Guid commitmentId,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var history = await _store.ReadHistoryAsync(commitmentId, cancellationToken)
+                .ConfigureAwait(false);
+            return history is null
+                ? SupervisionResult<CommitmentHistoryView>.Fail(
+                    "commitment_not_found", "没有找到这条工作承诺。")
+                : SupervisionResult<CommitmentHistoryView>.Ok(history);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<SupervisionResult<CommitmentView>> ConfirmOfflineStartedAsync(
         Guid commitmentId,
+        CancellationToken cancellationToken = default)
+    {
+        var current = (await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            .SingleOrDefault(item => item.Id == commitmentId);
+        return current is null
+            ? SupervisionResult<CommitmentView>.Fail("commitment_not_found", "没有找到这条工作承诺。")
+            : await ConfirmOfflineStartedAsync(commitmentId, current.Version, cancellationToken)
+                .ConfigureAwait(false);
+    }
+
+    public async Task<SupervisionResult<CommitmentView>> ConfirmOfflineStartedAsync(
+        Guid commitmentId,
+        int expectedVersion,
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -421,9 +598,14 @@ public sealed class SupervisionModule : IAsyncDisposable
                 return SupervisionResult<CommitmentView>.Fail(
                     "offline_commitment_skipped", "已跳过的发生项不能确认开始。");
             }
+            if (stored is not null && stored.Version != expectedVersion)
+            {
+                return SupervisionResult<CommitmentView>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
 
             var result = await _store.ConfirmOfflineStartedAsync(
-                commitmentId, _clock.Now, cancellationToken).ConfigureAwait(false);
+                commitmentId, expectedVersion, _clock.Now, cancellationToken).ConfigureAwait(false);
             if (!result.Success || result.Value is null)
             {
                 return SupervisionResult<CommitmentView>.Fail(result.ErrorCode!, result.Message!);
@@ -441,6 +623,7 @@ public sealed class SupervisionModule : IAsyncDisposable
 
     public async Task<SupervisionResult<ActivityRuleBinding>> SaveActivityRuleAsync(
         ActivityRuleBinding binding,
+        int? expectedCommitmentVersion = null,
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -453,6 +636,12 @@ public sealed class SupervisionModule : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (binding.Scope == ActivityRuleScope.Commitment && expectedCommitmentVersion is null)
+            {
+                return SupervisionResult<ActivityRuleBinding>.Fail(
+                    "commitment_version_required", "保存单次承诺规则必须绑定当前承诺版本。");
+            }
+
             if (binding.Scope == ActivityRuleScope.Commitment &&
                 !(await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
                     .Any(commitment => commitment.Id == binding.ScopeId))
@@ -461,7 +650,12 @@ public sealed class SupervisionModule : IAsyncDisposable
                     "commitment_not_found", "没有找到这条工作承诺。");
             }
 
-            await _store.SaveActivityRuleAsync(binding, cancellationToken).ConfigureAwait(false);
+            if (!await _store.SaveActivityRuleAsync(
+                    binding, expectedCommitmentVersion, cancellationToken).ConfigureAwait(false))
+            {
+                return SupervisionResult<ActivityRuleBinding>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
             return SupervisionResult<ActivityRuleBinding>.Ok(binding);
         }
         finally
@@ -474,6 +668,20 @@ public sealed class SupervisionModule : IAsyncDisposable
         Guid commitmentId,
         CancellationToken cancellationToken = default)
     {
+        var current = (await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            .SingleOrDefault(item => item.Id == commitmentId);
+        return current is null
+            ? SupervisionResult<ActiveSupervisionView>.Fail(
+                "commitment_not_found", "没有找到这条工作承诺。")
+            : await RecordReturnIntentAsync(commitmentId, current.Version, cancellationToken)
+                .ConfigureAwait(false);
+    }
+
+    public async Task<SupervisionResult<ActiveSupervisionView>> RecordReturnIntentAsync(
+        Guid commitmentId,
+        int expectedVersion,
+        CancellationToken cancellationToken = default)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -484,9 +692,21 @@ public sealed class SupervisionModule : IAsyncDisposable
                 return SupervisionResult<ActiveSupervisionView>.Fail(lookup.ErrorCode!, lookup.Message!);
             }
 
+            if (lookup.Value.Version != expectedVersion)
+            {
+                return SupervisionResult<ActiveSupervisionView>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
+
             var state = await _store.ReadRuntimeAsync(commitmentId, cancellationToken).ConfigureAwait(false);
             state = state with { ReturnIntentAt = _clock.Now };
-            await _store.WriteRuntimeAsync(state, cancellationToken).ConfigureAwait(false);
+            if (!await _store.PersistRuntimeAndResponseAsync(
+                    state, expectedVersion, "return_intent", _clock.Now, null, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                return SupervisionResult<ActiveSupervisionView>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
             return SupervisionResult<ActiveSupervisionView>.Ok(
                 await ToActiveViewAsync(state, cancellationToken).ConfigureAwait(false));
         }
@@ -496,12 +716,23 @@ public sealed class SupervisionModule : IAsyncDisposable
         }
     }
 
-    public async Task<SupervisionResult<ActiveSupervisionView>> ClassifyCurrentActivityAsync(
+    public Task<SupervisionResult<ActiveSupervisionView>> ClassifyCurrentActivityAsync(
         Guid commitmentId,
         ActivityClassification classification,
         ActivityRuleScope scope,
         string? note = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) => ClassifyActivityWithinGateAsync(
+            commitmentId, null, null, null, classification, scope, note, cancellationToken);
+
+    private async Task<SupervisionResult<ActiveSupervisionView>> ClassifyActivityWithinGateAsync(
+        Guid commitmentId,
+        int? expectedVersion,
+        CommitmentTarget? expectedTarget,
+        DateTimeOffset? expectedActivityStateStartedAt,
+        ActivityClassification classification,
+        ActivityRuleScope scope,
+        string? note,
+        CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (classification is not (ActivityClassification.Related or ActivityClassification.Distracting))
@@ -526,7 +757,20 @@ public sealed class SupervisionModule : IAsyncDisposable
             }
 
             var commitment = lookup.Value;
+            if (expectedVersion is { } version && commitment.Version != version)
+            {
+                return SupervisionResult<ActiveSupervisionView>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
+
             var state = await _store.ReadRuntimeAsync(commitmentId, cancellationToken).ConfigureAwait(false);
+            if (expectedTarget is not null &&
+                (!TargetsEqual(state.CurrentTarget, expectedTarget) ||
+                 state.ActivityStateStartedAt != expectedActivityStateStartedAt))
+            {
+                return SupervisionResult<ActiveSupervisionView>.Fail(
+                    "activity_changed", "当前活动已经变化，请按新的活动状态重新操作。");
+            }
             if (state.CurrentTarget is null || state.ActivityStateStartedAt is null)
             {
                 return SupervisionResult<ActiveSupervisionView>.Fail(
@@ -547,6 +791,11 @@ public sealed class SupervisionModule : IAsyncDisposable
             }
 
             var original = state.Classification ?? ActivityClassification.Unknown;
+            var correctedAt = _clock.Now;
+            var versionEffectiveFrom = await _store.ReadVersionEffectiveFromAsync(
+                commitment.Id, commitment.Version, cancellationToken).ConfigureAwait(false);
+            var correctionEffectiveFrom = Max(
+                state.ActivityStateStartedAt.Value, versionEffectiveFrom);
             var binding = new ActivityRuleBinding(
                 scope, scopeId, new ActivityRule(state.CurrentTarget, classification));
             IReadOnlyList<ActivityRuleBinding> bindings = scope == ActivityRuleScope.Commitment
@@ -560,8 +809,18 @@ public sealed class SupervisionModule : IAsyncDisposable
                         binding.Rule)
                 ];
             var correction = new ActivityCorrectionView(
-                state.CurrentTarget, original, classification, state.ActivityStateStartedAt.Value,
-                _clock.Now, scope, NormalizeOptional(note));
+                state.CurrentTarget, original, classification, correctionEffectiveFrom,
+                correctedAt, scope, NormalizeOptional(note), commitment.Version);
+            var pendingSegment = state.LastObservedAt is { } pendingStart && correctedAt > pendingStart
+                ? new PendingActivitySegment(
+                    ActivityAvailability.Available,
+                    state.CurrentTarget,
+                    original,
+                    state.IsIdle,
+                    state.DeviationReason,
+                    pendingStart,
+                    correctedAt)
+                : null;
             ReminderNotice? reminder = null;
             if (classification == ActivityClassification.Related)
             {
@@ -573,13 +832,12 @@ public sealed class SupervisionModule : IAsyncDisposable
             }
             else
             {
-                var effectiveFrom = state.ActivityStateStartedAt.Value;
                 state = state with
                 {
                     Classification = ActivityClassification.Distracting,
-                    DeviationStartedAt = effectiveFrom,
-                    CountedDeviation = _clock.Now > effectiveFrom
-                        ? _clock.Now - effectiveFrom
+                    DeviationStartedAt = correctionEffectiveFrom,
+                    CountedDeviation = _clock.Now > correctionEffectiveFrom
+                        ? _clock.Now - correctionEffectiveFrom
                         : TimeSpan.Zero,
                     DeviationCountingSince = _clock.Now,
                     DeviationReason = DeviationReason.DistractingActivity,
@@ -589,8 +847,13 @@ public sealed class SupervisionModule : IAsyncDisposable
                 (state, reminder) = PrepareLocalDeviationReminder(commitment, state);
             }
 
-            await _store.PersistClassificationAsync(bindings, correction, state, reminder, cancellationToken)
-                .ConfigureAwait(false);
+            if (!await _store.PersistClassificationAsync(
+                    bindings, correction, commitment.Version, pendingSegment, state, reminder,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                return SupervisionResult<ActiveSupervisionView>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
             if (reminder is not null)
             {
                 await DeliverBestEffortAsync(reminder, cancellationToken).ConfigureAwait(false);
@@ -604,8 +867,56 @@ public sealed class SupervisionModule : IAsyncDisposable
         }
     }
 
+    public async Task<SupervisionResult<ActiveSupervisionView>> ClassifyActivityAsync(
+        Guid commitmentId,
+        CommitmentTarget target,
+        DateTimeOffset activityStateStartedAt,
+        ActivityClassification classification,
+        ActivityRuleScope scope,
+        string? note = null,
+        CancellationToken cancellationToken = default)
+    {
+        var commitment = (await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            .SingleOrDefault(item => item.Id == commitmentId);
+        return commitment is null
+            ? SupervisionResult<ActiveSupervisionView>.Fail(
+                "commitment_not_found", "没有找到这条工作承诺。")
+            : await ClassifyActivityAsync(
+                commitmentId, commitment.Version, target, activityStateStartedAt,
+                classification, scope, note, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<SupervisionResult<ActiveSupervisionView>> ClassifyActivityAsync(
+        Guid commitmentId,
+        int expectedVersion,
+        CommitmentTarget target,
+        DateTimeOffset activityStateStartedAt,
+        ActivityClassification classification,
+        ActivityRuleScope scope,
+        string? note = null,
+        CancellationToken cancellationToken = default)
+    {
+        return await ClassifyActivityWithinGateAsync(
+            commitmentId, expectedVersion, target, activityStateStartedAt,
+            classification, scope, note, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<SupervisionResult<TimedRestView>> RespondToRestPromptAsync(
         Guid commitmentId,
+        bool isResting,
+        CancellationToken cancellationToken = default)
+    {
+        var current = (await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            .SingleOrDefault(item => item.Id == commitmentId);
+        return current is null
+            ? SupervisionResult<TimedRestView>.Fail("commitment_not_found", "没有找到这条工作承诺。")
+            : await RespondToRestPromptAsync(
+                commitmentId, current.Version, isResting, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<SupervisionResult<TimedRestView>> RespondToRestPromptAsync(
+        Guid commitmentId,
+        int expectedVersion,
         bool isResting,
         CancellationToken cancellationToken = default)
     {
@@ -620,6 +931,11 @@ public sealed class SupervisionModule : IAsyncDisposable
             }
 
             var commitment = lookup.Value;
+            if (commitment.Version != expectedVersion)
+            {
+                return SupervisionResult<TimedRestView>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
             var state = await _store.ReadRuntimeAsync(commitmentId, cancellationToken).ConfigureAwait(false);
             if (state.PendingPrompt != SupervisionPromptKind.ConfirmRest || state.IdleStartedAt is null)
             {
@@ -630,7 +946,13 @@ public sealed class SupervisionModule : IAsyncDisposable
             if (!isResting)
             {
                 state = state with { PendingPrompt = null };
-                await _store.WriteRuntimeAsync(state, cancellationToken).ConfigureAwait(false);
+                if (!await _store.PersistRuntimeAndResponseAsync(
+                        state, expectedVersion, "rest_denied", _clock.Now, null, cancellationToken)
+                    .ConfigureAwait(false))
+                {
+                    return SupervisionResult<TimedRestView>.Fail(
+                        "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+                }
                 return SupervisionResult<TimedRestView>.Fail(
                     "rest_denied", "已记录不是休息，空闲继续计入偏离。");
             }
@@ -652,7 +974,13 @@ public sealed class SupervisionModule : IAsyncDisposable
                 IsIdle = false,
                 IdleStartedAt = null
             };
-            await _store.WriteRuntimeAsync(state, cancellationToken).ConfigureAwait(false);
+            if (!await _store.PersistRuntimeAndResponseAsync(
+                    state, expectedVersion, "rest_confirmed", _clock.Now, null, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                return SupervisionResult<TimedRestView>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
             return SupervisionResult<TimedRestView>.Ok(rest);
         }
         finally
@@ -663,6 +991,20 @@ public sealed class SupervisionModule : IAsyncDisposable
 
     public async Task<SupervisionResult<TimedRestView>> StartTimedRestAsync(
         Guid commitmentId,
+        DateTimeOffset? endAt,
+        CancellationToken cancellationToken = default)
+    {
+        var current = (await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            .SingleOrDefault(item => item.Id == commitmentId);
+        return current is null
+            ? SupervisionResult<TimedRestView>.Fail("commitment_not_found", "没有找到这条工作承诺。")
+            : await StartTimedRestAsync(
+                commitmentId, current.Version, endAt, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<SupervisionResult<TimedRestView>> StartTimedRestAsync(
+        Guid commitmentId,
+        int expectedVersion,
         DateTimeOffset? endAt,
         CancellationToken cancellationToken = default)
     {
@@ -687,6 +1029,11 @@ public sealed class SupervisionModule : IAsyncDisposable
             {
                 return SupervisionResult<TimedRestView>.Fail(lookup.ErrorCode!, lookup.Message!);
             }
+            if (lookup.Value!.Version != expectedVersion)
+            {
+                return SupervisionResult<TimedRestView>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
 
             var rest = new TimedRestView(_clock.Now, endAt.Value, TimedRestSource.Proactive);
             var state = ResetDeviation(
@@ -697,7 +1044,13 @@ public sealed class SupervisionModule : IAsyncDisposable
                 IsIdle = false,
                 IdleStartedAt = null
             };
-            await _store.WriteRuntimeAsync(state, cancellationToken).ConfigureAwait(false);
+            if (!await _store.PersistRuntimeAndResponseAsync(
+                    state, expectedVersion, "timed_rest_started", _clock.Now, null, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                return SupervisionResult<TimedRestView>.Fail(
+                    "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
+            }
             return SupervisionResult<TimedRestView>.Ok(rest);
         }
         finally
@@ -728,9 +1081,55 @@ public sealed class SupervisionModule : IAsyncDisposable
             var observation = await _activitySource.ObserveAsync(cancellationToken).ConfigureAwait(false);
             _latestActivity = observation;
             var state = await _store.ReadRuntimeAsync(active.Id, cancellationToken).ConfigureAwait(false);
-            state = await AdvanceAsync(active, state, observation, now, cancellationToken)
+            var previousState = state;
+            var advance = await AdvanceAsync(active, state, observation, now, cancellationToken)
                 .ConfigureAwait(false);
-            await _store.WriteRuntimeAsync(state, cancellationToken).ConfigureAwait(false);
+            state = advance.State;
+            bool persisted;
+            if (previousState.LastObservedAt is { } segmentStart && now > segmentStart)
+            {
+                persisted = await _store.PersistActivitySegmentAndRuntimeAsync(
+                    active.Id,
+                    active.Version,
+                    await _store.ReadVersionAtAsync(active.Id, segmentStart, cancellationToken)
+                        .ConfigureAwait(false),
+                    new ActivityObservation(
+                        previousState.LastUnobservableStartedAt is not null &&
+                        previousState.LastUnobservableEndedAt is null
+                            ? ActivityAvailability.Unobservable
+                            : ActivityAvailability.Available,
+                        !previousState.IsIdle,
+                        previousState.CurrentTarget?.Kind == CommitmentTargetKind.Application
+                            ? previousState.CurrentTarget.Value
+                            : null,
+                        segmentStart,
+                        previousState.CurrentTarget?.Kind == CommitmentTargetKind.Website
+                            ? previousState.CurrentTarget.Value
+                            : null),
+                    previousState.CurrentTarget,
+                    previousState.Classification,
+                    previousState.IsIdle,
+                    previousState.DeviationReason,
+                    segmentStart,
+                    now,
+                    state,
+                    advance.Notices,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                persisted = await _store.PersistRuntimeAndRemindersAsync(
+                        state, active.Version, advance.Notices, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            if (!persisted)
+            {
+                return;
+            }
+            foreach (var notice in advance.Notices)
+            {
+                await DeliverBestEffortAsync(notice, cancellationToken).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -782,18 +1181,19 @@ public sealed class SupervisionModule : IAsyncDisposable
         return ValueTask.CompletedTask;
     }
 
-    private async Task<StoredSupervisionRuntime> AdvanceAsync(
+    private async Task<AdvanceResult> AdvanceAsync(
         StoredCommitment commitment,
         StoredSupervisionRuntime state,
         ActivityObservation observation,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        var notices = new List<ReminderNotice>();
         if (state.ActiveRest is { } rest)
         {
             if (now < rest.EndAt)
             {
-                return state with { LastObservedAt = now };
+                return new AdvanceResult(state with { LastObservedAt = now }, notices);
             }
 
             if (state.LastRestEndedAt != rest.EndAt)
@@ -804,7 +1204,8 @@ public sealed class SupervisionModule : IAsyncDisposable
                     now,
                     ReminderKind.RestEnded,
                     Guid.NewGuid(),
-                    now.Add(BubbleDuration));
+                    now.Add(BubbleDuration),
+                    CommitmentVersion: commitment.Version);
                 state = state with
                 {
                     ActiveRest = null,
@@ -813,7 +1214,7 @@ public sealed class SupervisionModule : IAsyncDisposable
                     IdleStartedAt = null,
                     LastObservedAt = rest.EndAt
                 };
-                await PersistAndDeliverAsync(notice, state, cancellationToken).ConfigureAwait(false);
+                notices.Add(notice);
             }
             else
             {
@@ -832,7 +1233,7 @@ public sealed class SupervisionModule : IAsyncDisposable
 
         if (observation.Availability == ActivityAvailability.Unobservable)
         {
-            return PauseForUnobservable(state, now);
+            return new AdvanceResult(PauseForUnobservable(state, now), notices);
         }
 
         if (state.LastUnobservableStartedAt is not null && state.LastUnobservableEndedAt is null)
@@ -847,6 +1248,10 @@ public sealed class SupervisionModule : IAsyncDisposable
         }
 
         var target = ObservationTarget(observation);
+        if (IsJarvisDesktop(target))
+        {
+            return new AdvanceResult(state with { LastObservedAt = now }, notices);
+        }
         var classification = target is null
             ? ActivityClassification.Unknown
             : await ClassifyAsync(commitment, target, cancellationToken).ConfigureAwait(false);
@@ -923,13 +1328,14 @@ public sealed class SupervisionModule : IAsyncDisposable
                 now,
                 ReminderKind.UnknownClassificationQuestion,
                 Guid.NewGuid(),
-                now.Add(BubbleDuration));
+                now.Add(BubbleDuration),
+                CommitmentVersion: commitment.Version);
             state = state with
             {
                 PendingPrompt = SupervisionPromptKind.UnknownClassification,
                 UnknownPromptedForStart = unknownSince
             };
-            await PersistAndDeliverAsync(notice, state, cancellationToken).ConfigureAwait(false);
+            notices.Add(notice);
         }
 
         if (idle && state.IdleStartedAt is { } since &&
@@ -942,37 +1348,27 @@ public sealed class SupervisionModule : IAsyncDisposable
                 now,
                 ReminderKind.RestQuestion,
                 Guid.NewGuid(),
-                now.Add(BubbleDuration));
+                now.Add(BubbleDuration),
+                CommitmentVersion: commitment.Version);
             state = state with
             {
                 PendingPrompt = SupervisionPromptKind.ConfirmRest,
                 RestPromptedForIdleStart = since
             };
-            await PersistAndDeliverAsync(notice, state, cancellationToken).ConfigureAwait(false);
+            notices.Add(notice);
         }
 
         if (state.DeviationReason != DeviationReason.UnknownActivity)
         {
-            state = await MaybePublishLocalDeviationAsync(commitment, state, cancellationToken)
-                .ConfigureAwait(false);
+            var local = PrepareLocalDeviationReminder(commitment, state);
+            state = local.State;
+            if (local.Notice is not null)
+            {
+                notices.Add(local.Notice);
+            }
         }
 
-        return state with { LastObservedAt = now };
-    }
-
-    private async Task<StoredSupervisionRuntime> MaybePublishLocalDeviationAsync(
-        StoredCommitment commitment,
-        StoredSupervisionRuntime state,
-        CancellationToken cancellationToken)
-    {
-        var (updatedState, notice) = PrepareLocalDeviationReminder(commitment, state);
-        if (notice is null)
-        {
-            return updatedState;
-        }
-
-        await PersistAndDeliverAsync(notice, updatedState, cancellationToken).ConfigureAwait(false);
-        return updatedState;
+        return new AdvanceResult(state with { LastObservedAt = now }, notices);
     }
 
     private (StoredSupervisionRuntime State, ReminderNotice? Notice) PrepareLocalDeviationReminder(
@@ -995,7 +1391,8 @@ public sealed class SupervisionModule : IAsyncDisposable
             Guid.NewGuid(),
             now.Add(BubbleDuration),
             PlaySound: true,
-            PersistentMarker: true);
+            PersistentMarker: true,
+            CommitmentVersion: commitment.Version);
         return (state with { LocalReminderSentAt = now, ReminderMarkerActive = true }, notice);
     }
 
@@ -1020,25 +1417,20 @@ public sealed class SupervisionModule : IAsyncDisposable
                     now,
                     ReminderKind.CommitmentStarted,
                     Guid.NewGuid(),
-                    now.Add(BubbleDuration));
-                await _store.PersistStartReminderAsync(notice, now, cancellationToken)
-                    .ConfigureAwait(false);
-                await DeliverBestEffortAsync(notice, cancellationToken).ConfigureAwait(false);
+                    now.Add(BubbleDuration),
+                    CommitmentVersion: commitment.Version);
+                if (await _store.PersistStartReminderAsync(notice, now, cancellationToken)
+                    .ConfigureAwait(false))
+                {
+                    await DeliverBestEffortAsync(notice, cancellationToken).ConfigureAwait(false);
+                }
                 continue;
             }
 
-            await _store.MarkStartReminderSentAsync(commitment.Id, now, cancellationToken)
+            await _store.MarkStartReminderSentAsync(
+                    commitment.Id, commitment.Version, now, cancellationToken)
                 .ConfigureAwait(false);
         }
-    }
-
-    private async Task PersistAndDeliverAsync(
-        ReminderNotice notice,
-        StoredSupervisionRuntime state,
-        CancellationToken cancellationToken)
-    {
-        await _store.PersistReminderAndRuntimeAsync(notice, state, cancellationToken).ConfigureAwait(false);
-        await DeliverBestEffortAsync(notice, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task DeliverBestEffortAsync(ReminderNotice notice, CancellationToken cancellationToken)
@@ -1057,6 +1449,10 @@ public sealed class SupervisionModule : IAsyncDisposable
             // or cause a later tick to create another reminder/sound for the same state transition.
         }
     }
+
+    private sealed record AdvanceResult(
+        StoredSupervisionRuntime State,
+        IReadOnlyList<ReminderNotice> Notices);
 
     private async Task<ActivityClassification> ClassifyAsync(
         StoredCommitment commitment,
@@ -1128,7 +1524,11 @@ public sealed class SupervisionModule : IAsyncDisposable
             state.DeviationStartedAt, counted, state.RelatedStableSince,
             state.ReminderMarkerActive, state.ReturnIntentAt, state.PendingPrompt, state.ActiveRest,
             state.LastUnobservableStartedAt, state.LastUnobservableEndedAt,
-            await _store.ReadCorrectionsAsync(state.CommitmentId, cancellationToken).ConfigureAwait(false));
+            await _store.ReadRecentCorrectionsAsync(state.CommitmentId, cancellationToken).ConfigureAwait(false),
+            (await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                .Single(item => item.Id == state.CommitmentId).Version,
+            state.CurrentTarget,
+            state.ActivityStateStartedAt);
     }
 
     private static StoredSupervisionRuntime PauseForUnobservable(
@@ -1301,7 +1701,15 @@ public sealed class SupervisionModule : IAsyncDisposable
         commitment.InputGoal, commitment.OutcomeGoal, commitment.RelatedAppsOrSites,
         commitment.SupervisionMode, commitment.ReminderSettings, DerivePhase(commitment, now),
         commitment.ConfirmedAt, commitment.OfflineManuallyConfirmedAt,
-        activityRules, commitment.RestSettings, commitment.TemplateId);
+        activityRules, commitment.RestSettings, commitment.TemplateId, commitment.Version);
+
+    private static CommitmentCard ToCard(
+        StoredCommitment commitment,
+        IReadOnlyList<ActivityRule> activityRules) => new(
+        Guid.Empty, commitment.Kind, commitment.StartAt, commitment.EndAt,
+        commitment.InputGoal, commitment.OutcomeGoal, commitment.RelatedAppsOrSites,
+        commitment.SupervisionMode, commitment.ReminderSettings, "", activityRules,
+        commitment.RestSettings, commitment.TemplateId);
 
     private static CommitmentPhase DerivePhase(StoredCommitment commitment, DateTimeOffset now)
     {
@@ -1337,6 +1745,10 @@ public sealed class SupervisionModule : IAsyncDisposable
     private static bool TargetsEqual(CommitmentTarget? left, CommitmentTarget? right) =>
         left is not null && right is not null && left.Kind == right.Kind &&
         string.Equals(TargetKey(left), TargetKey(right), StringComparison.Ordinal);
+
+    private static bool IsJarvisDesktop(CommitmentTarget? target) =>
+        target is { Kind: CommitmentTargetKind.Application } &&
+        string.Equals(TargetKey(target), "JARVIS.DESKTOP", StringComparison.Ordinal);
 
     private static string TargetKey(CommitmentTarget target)
     {

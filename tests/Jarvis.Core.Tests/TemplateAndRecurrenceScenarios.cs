@@ -339,7 +339,8 @@ public sealed class TemplateAndRecurrenceScenarios
                 RecurrenceChangeKind.Adjust,
                 scope,
                 NewStartAt: anchor.StartAt.AddHours(1),
-                NewDurationMinutes: 45))).Value!;
+                NewDurationMinutes: 45,
+                Reason: "调整验证"))).Value!;
             Assert.Equal(expected,
                 adjusted.Occurrences.Count(x => x.StartAt == startsBefore[x.CommitmentId].AddHours(1) &&
                                                 (x.EndAt - x.StartAt).TotalMinutes == 45));
@@ -369,7 +370,8 @@ public sealed class TemplateAndRecurrenceScenarios
             plan.Occurrences[0].CommitmentId,
             RecurrenceChangeKind.Adjust,
             RecurrenceChangeScope.ThisOccurrence,
-            NewStartAt: plan.Occurrences[0].StartAt.AddHours(1)));
+            NewStartAt: plan.Occurrences[0].StartAt.AddHours(1),
+            Reason: "历史不可变验证"));
         Assert.False(rejected.Success);
         Assert.Equal("recurrence_history_immutable", rejected.ErrorCode);
 
@@ -378,7 +380,8 @@ public sealed class TemplateAndRecurrenceScenarios
             plan.Occurrences[2].CommitmentId,
             RecurrenceChangeKind.Adjust,
             RecurrenceChangeScope.EntirePlan,
-            NewStartAt: plan.Occurrences[2].StartAt.AddHours(1)));
+            NewStartAt: plan.Occurrences[2].StartAt.AddHours(1),
+            Reason: "整体延后一小时"));
         Assert.True(adjusted.Success);
         Assert.Equal(original[plan.Occurrences[0].CommitmentId], adjusted.Value!.Occurrences[0].StartAt);
         Assert.All(adjusted.Value.Occurrences.Skip(1), occurrence =>
@@ -430,12 +433,64 @@ public sealed class TemplateAndRecurrenceScenarios
             anchor.CommitmentId,
             RecurrenceChangeKind.Adjust,
             RecurrenceChangeScope.EntirePlan,
-            NewStartAt: Baseline.AddHours(1)));
+            NewStartAt: Baseline.AddHours(1),
+            Reason: "历史不可变验证"));
 
         Assert.False(rejected.Success);
         Assert.Equal("recurrence_history_immutable", rejected.ErrorCode);
         var unchanged = (await module.GetSnapshotAsync()).RecurrencePlans.Single(item => item.Id == plan.Id);
         Assert.All(unchanged.Occurrences, item => Assert.Equal(before[item.CommitmentId], item.StartAt));
+    }
+
+    [Fact]
+    public async Task Recurrence_change_candidate_is_stale_when_an_occurrence_version_changes_before_confirm()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Baseline);
+        await using var firstModule = await OpenAsync(database.Path, clock);
+        var plan = await CreateThreeDatePlanAsync(firstModule, hour: 10);
+        var anchor = plan.Occurrences[1];
+        var startsBefore = plan.Occurrences.ToDictionary(item => item.CommitmentId, item => item.StartAt);
+        var preview = await firstModule.PrepareRecurrenceChangeAsync(new RecurrenceChangeRequest(
+            plan.Id,
+            anchor.CommitmentId,
+            RecurrenceChangeKind.Adjust,
+            RecurrenceChangeScope.ThisAndFuture,
+            NewStartAt: anchor.StartAt.AddHours(1),
+            Reason: "batch adjustment"));
+        Assert.True(preview.Success, preview.Message);
+
+        await using (var secondModule = await OpenAsync(database.Path, clock))
+        {
+            var current = (await secondModule.GetSnapshotAsync()).Commitments
+                .Single(item => item.Id == anchor.CommitmentId);
+            var revision = await secondModule.PrepareCommitmentRevisionAsync(new CommitmentRevisionDraft(
+                current.Id,
+                current.Version,
+                new CommitmentDraft(
+                    current.Kind,
+                    current.StartAt,
+                    current.EndAt,
+                    DurationMinutes: null,
+                    InputGoal: "individually revised",
+                    current.OutcomeGoal,
+                    current.RelatedAppsOrSites,
+                    current.SupervisionMode,
+                    current.ReminderSettings,
+                    current.ActivityRules,
+                    current.RestSettings,
+                    current.TemplateId),
+                "individual revision wins"));
+            Assert.True(revision.Success, revision.Message);
+            Assert.True((await secondModule.ConfirmCommitmentRevisionAsync(revision.Value!.CandidateId)).Success);
+        }
+
+        var rejected = await firstModule.ConfirmRecurrenceChangeAsync(preview.Value!.CandidateId);
+        Assert.False(rejected.Success);
+        Assert.Equal("commitment_version_stale", rejected.ErrorCode);
+        var after = (await firstModule.GetSnapshotAsync()).RecurrencePlans.Single(item => item.Id == plan.Id);
+        Assert.All(after.Occurrences, occurrence =>
+            Assert.Equal(startsBefore[occurrence.CommitmentId], occurrence.StartAt));
     }
 
     private static async Task<RecurrencePlanView> CreatePlanAsync(

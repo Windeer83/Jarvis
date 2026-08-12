@@ -175,7 +175,8 @@ public sealed record ReminderNotice(
     Guid NoticeId = default,
     DateTimeOffset? BubbleExpiresAt = null,
     bool PlaySound = false,
-    bool PersistentMarker = false);
+    bool PersistentMarker = false,
+    int CommitmentVersion = 1);
 
 public sealed record ActivityCorrectionView(
     CommitmentTarget Target,
@@ -184,7 +185,9 @@ public sealed record ActivityCorrectionView(
     DateTimeOffset EffectiveFrom,
     DateTimeOffset CorrectedAt,
     ActivityRuleScope Scope,
-    string? Note);
+    string? Note,
+    int CommitmentVersion = 1,
+    long? ActivitySegmentId = null);
 
 public sealed record TimedRestView(
     DateTimeOffset StartAt,
@@ -205,7 +208,10 @@ public sealed record ActiveSupervisionView(
     TimedRestView? ActiveRest,
     DateTimeOffset? LastUnobservableStartedAt,
     DateTimeOffset? LastUnobservableEndedAt,
-    IReadOnlyList<ActivityCorrectionView> RecentCorrections);
+    IReadOnlyList<ActivityCorrectionView> RecentCorrections,
+    int CommitmentVersion = 1,
+    CommitmentTarget? ActionableTarget = null,
+    DateTimeOffset? ActivityStateStartedAt = null);
 
 public sealed record CommitmentView(
     Guid Id,
@@ -222,7 +228,65 @@ public sealed record CommitmentView(
     DateTimeOffset? OfflineManuallyConfirmedAt,
     IReadOnlyList<ActivityRule> ActivityRules,
     RestSettings RestSettings,
-    Guid? TemplateId = null);
+    Guid? TemplateId = null,
+    int Version = 1);
+
+public sealed record CommitmentRevisionDraft(
+    Guid CommitmentId,
+    int ExpectedVersion,
+    CommitmentDraft Proposed,
+    string Reason);
+
+public sealed record CommitmentRevisionVersionView(
+    Guid CommitmentId,
+    int Version,
+    DateTimeOffset EffectiveFrom,
+    DateTimeOffset ConfirmedAt,
+    string Reason,
+    CommitmentCard Snapshot);
+
+public sealed record CommitmentRevisionCard(
+    Guid CandidateId,
+    Guid CommitmentId,
+    int FromVersion,
+    int ToVersion,
+    DateTimeOffset EffectiveFrom,
+    CommitmentCard Before,
+    CommitmentCard After,
+    string Reason,
+    string ConfirmationNotice);
+
+public sealed record ActivitySegmentView(
+    long Id,
+    Guid CommitmentId,
+    int CommitmentVersion,
+    DateTimeOffset StartAt,
+    DateTimeOffset EndAt,
+    ActivityAvailability Availability,
+    CommitmentTarget? Target,
+    ActivityClassification? OriginalClassification,
+    ActivityClassification? EffectiveClassification,
+    bool IsIdle,
+    DeviationReason? DeviationReason,
+    DateTimeOffset? CorrectedAt = null,
+    string? CorrectionNote = null);
+
+public sealed record SupervisionResponseView(
+    long Id,
+    Guid CommitmentId,
+    int CommitmentVersion,
+    string Kind,
+    DateTimeOffset RecordedAt,
+    string? Note = null);
+
+public sealed record CommitmentHistoryView(
+    Guid CommitmentId,
+    int CurrentVersion,
+    IReadOnlyList<CommitmentRevisionVersionView> Versions,
+    IReadOnlyList<ActivitySegmentView> ActivitySegments,
+    IReadOnlyList<ReminderNotice> Reminders,
+    IReadOnlyList<ActivityCorrectionView> Corrections,
+    IReadOnlyList<SupervisionResponseView> Responses);
 
 public sealed record CommitmentTemplateDraft(
     string Name,
@@ -302,7 +366,8 @@ public sealed record RecurrenceChangeRequest(
     RecurrenceChangeKind Kind,
     RecurrenceChangeScope Scope,
     DateTimeOffset? NewStartAt = null,
-    int? NewDurationMinutes = null);
+    int? NewDurationMinutes = null,
+    string? Reason = null);
 
 public sealed record RecurrenceChangeOccurrencePreview(
     Guid CommitmentId,
@@ -312,7 +377,9 @@ public sealed record RecurrenceChangeOccurrencePreview(
     RecurrenceOccurrenceStatus BeforeStatus,
     DateTimeOffset AfterStartAt,
     DateTimeOffset AfterEndAt,
-    RecurrenceOccurrenceStatus AfterStatus);
+    RecurrenceOccurrenceStatus AfterStatus,
+    int BeforeVersion = 1,
+    int AfterVersion = 1);
 
 public sealed record RecurrenceChangeCard(
     Guid CandidateId,
@@ -320,7 +387,8 @@ public sealed record RecurrenceChangeCard(
     RecurrenceChangeKind Kind,
     RecurrenceChangeScope Scope,
     IReadOnlyList<RecurrenceChangeOccurrencePreview> AffectedOccurrences,
-    string ConfirmationNotice);
+    string ConfirmationNotice,
+    string? Reason = null);
 
 [method: JsonConstructor]
 public sealed record SupervisionSnapshot(
@@ -371,7 +439,11 @@ public sealed record CoreRequest(
     ActivityRuleScope? RuleScope = null,
     bool? IsResting = null,
     DateTimeOffset? RestEndAt = null,
-    string? Note = null);
+    string? Note = null,
+    CommitmentRevisionDraft? RevisionDraft = null,
+    int? ExpectedVersion = null,
+    CommitmentTarget? ActivityTarget = null,
+    DateTimeOffset? ActivityStateStartedAt = null);
 
 public sealed record CoreResponse(
     bool Success,
@@ -382,7 +454,9 @@ public sealed record CoreResponse(
     CommitmentTemplateView? Template = null,
     RecurrenceCard? RecurrenceCard = null,
     RecurrencePlanView? RecurrencePlan = null,
-    RecurrenceChangeCard? RecurrenceChangeCard = null);
+    RecurrenceChangeCard? RecurrenceChangeCard = null,
+    CommitmentRevisionCard? CommitmentRevisionCard = null,
+    CommitmentHistoryView? CommitmentHistory = null);
 
 public static class CoreProtocol
 {
@@ -419,6 +493,9 @@ public static class CoreOperations
     public const string ConfirmRecurrence = "confirmRecurrence";
     public const string PrepareRecurrenceChange = "prepareRecurrenceChange";
     public const string ConfirmRecurrenceChange = "confirmRecurrenceChange";
+    public const string PrepareCommitmentRevision = "prepareCommitmentRevision";
+    public const string ConfirmCommitmentRevision = "confirmCommitmentRevision";
+    public const string GetCommitmentHistory = "getCommitmentHistory";
     public const string SaveActivityRule = "saveActivityRule";
     public const string ClassifyCurrentActivity = "classifyCurrentActivity";
     public const string RecordReturnIntent = "recordReturnIntent";

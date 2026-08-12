@@ -9,11 +9,13 @@ public sealed class LocalReminderSoundGate
     public bool Consume(
         ReminderNotice? reminder,
         Guid currentCommitmentId,
+        int currentCommitmentVersion,
         DateTimeOffset now,
         bool presentationSuppressesSound)
     {
         if (reminder is not { PlaySound: true } ||
             reminder.CommitmentId != currentCommitmentId ||
+            reminder.CommitmentVersion != currentCommitmentVersion ||
             reminder.BubbleExpiresAt is not { } expiresAt ||
             expiresAt <= now ||
             reminder.NoticeId == _consumedNoticeId)

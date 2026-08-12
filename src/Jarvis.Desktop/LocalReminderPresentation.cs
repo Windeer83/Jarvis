@@ -23,6 +23,7 @@ public readonly record struct LocalReminderPresentation(
         muted |= !reminderSettings.SoundEnabled;
         var freshCurrentBubble = reminder is not null &&
                                  reminder.CommitmentId == currentCommitmentId &&
+                                 reminder.CommitmentVersion == state.CommitmentVersion &&
                                  reminder.BubbleExpiresAt > now;
         var fullscreenDeviationBubble = freshCurrentBubble &&
                                         reminder!.Kind == ReminderKind.LocalDeviation &&

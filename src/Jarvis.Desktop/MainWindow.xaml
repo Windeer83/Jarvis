@@ -23,8 +23,35 @@
             </DockPanel>
         </Border>
 
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer x:Name="ContentScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel>
+                <Border x:Name="RevisionModePanel" Visibility="Collapsed" Background="#EAF3FF"
+                        BorderBrush="#6B93C9" BorderThickness="1" CornerRadius="10"
+                        Padding="14" Margin="0,0,0,14">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,18,0">
+                            <TextBlock Text="正在修订承诺" FontSize="17" FontWeight="SemiBold"
+                                       Foreground="#244A86" />
+                            <TextBlock x:Name="RevisionModeText" Margin="0,4,0,0"
+                                       Foreground="#4A6282" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="修改原因（必填）" FontWeight="SemiBold" />
+                            <TextBox x:Name="RevisionReasonBox" Margin="0,5,12,0" Padding="6"
+                                     ToolTip="用一句话说明为什么修改；原因会永久保留在历史中。" />
+                            <TextBlock Text="只从确认修订的时刻向后生效；此前记录不会被改写。"
+                                       Margin="0,5,0,0" Foreground="#5B6474" />
+                        </StackPanel>
+                        <Button Grid.Column="2" Content="取消修订" Width="88" Height="32"
+                                Click="CancelRevisionButton_Click" />
+                    </Grid>
+                </Border>
+
                 <GroupBox Header="承诺内容（一次性、模板与重复安排共用）" Padding="14" Margin="0,0,0,14">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -146,7 +173,7 @@
                     </StackPanel>
                 </GroupBox>
 
-                <GroupBox Header="模板（不含日期，保存不会创建承诺）" Padding="12" Margin="0,0,0,14">
+                <GroupBox x:Name="TemplateGroup" Header="模板（不含日期，保存不会创建承诺）" Padding="12" Margin="0,0,0,14">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="125" />
@@ -176,7 +203,7 @@
                     </Grid>
                 </GroupBox>
 
-                <GroupBox Header="重复安排（确认前不写入）" Padding="12" Margin="0,0,0,14">
+                <GroupBox x:Name="RecurrenceGroup" Header="重复安排（确认前不写入）" Padding="12" Margin="0,0,0,14">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="105" />
@@ -241,9 +268,9 @@
                         <WrapPanel>
                             <Button Content="马上回去" Margin="0,0,8,8" Padding="12,5"
                                     Click="ReturnNowButton_Click" />
-                            <Button Content="本次活动相关" Margin="0,0,8,8" Padding="12,5"
+                            <Button x:Name="CurrentRelatedButton" Content="本次活动相关" Margin="0,0,8,8" Padding="12,5"
                                     Click="CurrentRelatedButton_Click" />
-                            <Button Content="本次活动分心" Margin="0,0,8,8" Padding="12,5"
+                            <Button x:Name="CurrentDistractingButton" Content="本次活动分心" Margin="0,0,8,8" Padding="12,5"
                                     Click="CurrentDistractingButton_Click" />
                             <ComboBox x:Name="RuleScopeBox" Width="120" Height="30" Margin="0,0,8,8" />
                             <Button x:Name="AcceptRestButton" Content="确认正在休息" Margin="0,0,8,8"
@@ -284,6 +311,11 @@
                             <TextBox x:Name="AdjustmentDurationBox" Width="55" Margin="0,0,8,0" Padding="5" />
                             <Button Content="调整" Width="70" Click="AdjustOccurrenceButton_Click" />
                         </WrapPanel>
+                        <DockPanel x:Name="AdjustmentReasonPanel" Margin="0,0,0,8">
+                            <TextBlock DockPanel.Dock="Left" Text="调整原因" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <TextBox x:Name="AdjustmentReasonBox" Padding="5"
+                                     ToolTip="调整发生项时必填；跳过不使用此项。" />
+                        </DockPanel>
                         <DataGrid x:Name="OccurrenceGrid" AutoGenerateColumns="False" IsReadOnly="True" Height="150"
                                   SelectionMode="Single" SelectionChanged="OccurrenceGrid_SelectionChanged">
                             <DataGrid.Columns>
@@ -314,10 +346,31 @@
                         <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                             <Button x:Name="ConfirmOfflineButton" Content="确认已开始线下工作" Height="34" Width="170"
                                     IsEnabled="False" Click="ConfirmOfflineButton_Click" />
+                            <Button x:Name="ReviseCommitmentButton" Content="修订所选" Height="34" Width="100"
+                                    Margin="10,0,0,0" IsEnabled="False" Click="ReviseCommitmentButton_Click" />
+                            <Button x:Name="ViewHistoryButton" Content="查看历史" Height="34" Width="100"
+                                    Margin="10,0,0,0" IsEnabled="False" Click="ViewHistoryButton_Click" />
                             <TextBlock x:Name="LatestReminderText" Margin="14,8,0,0" Foreground="#5B6474" />
                         </StackPanel>
                     </StackPanel>
                 </GroupBox>
+
+                <Border x:Name="HistoryPanel" Visibility="Collapsed" Background="White"
+                        BorderBrush="#B8C0CC" BorderThickness="1" CornerRadius="10"
+                        Padding="14" Margin="0,0,0,14">
+                    <StackPanel>
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="收起" Width="70" Height="28"
+                                    Click="CloseHistoryButton_Click" />
+                            <TextBlock x:Name="HistoryHeaderText" Text="所选承诺的历史"
+                                       FontSize="17" FontWeight="SemiBold" />
+                        </DockPanel>
+                        <TextBlock Text="版本、修改原因和此前发生的监督事实都会保留。"
+                                   Margin="0,5,0,10" Foreground="#5B6474" />
+                        <TextBlock x:Name="HistoryText" Text="正在读取…" TextWrapping="Wrap"
+                                   LineHeight="22" />
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </ScrollViewer>
 

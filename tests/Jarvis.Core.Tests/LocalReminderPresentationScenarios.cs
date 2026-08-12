@@ -83,6 +83,36 @@ public sealed class LocalReminderPresentationScenarios
         Assert.True(quiet.SuppressSound);
     }
 
+    [Fact]
+    public void Reminder_from_an_old_commitment_version_is_not_presented_even_while_fresh()
+    {
+        var now = DateTimeOffset.UnixEpoch;
+        var commitmentId = Guid.NewGuid();
+        var versionTwo = State(
+            commitmentId,
+            ActivityClassification.Distracting,
+            marker: false,
+            commitmentVersion: 2);
+        var versionOneReminder = Notice(
+            commitmentId,
+            now,
+            ReminderKind.LocalDeviation,
+            commitmentVersion: 1);
+
+        var presentation = LocalReminderPresentation.Evaluate(
+            versionOneReminder,
+            versionTwo,
+            commitmentId,
+            now,
+            Reminders(),
+            quietPresentation: false,
+            foregroundIsFullscreen: false,
+            muted: false);
+
+        Assert.False(presentation.ShowBubble);
+        Assert.False(presentation.ShowOverlay);
+    }
+
     [Theory]
     [InlineData(-1, -1, 1921, 1081, true)]
     [InlineData(0, 0, 1920, 1080, true)]
@@ -111,7 +141,8 @@ public sealed class LocalReminderPresentationScenarios
     private static ActiveSupervisionView State(
         Guid commitmentId,
         ActivityClassification classification,
-        bool marker) =>
+        bool marker,
+        int commitmentVersion = 1) =>
         new(
             commitmentId,
             classification,
@@ -126,12 +157,14 @@ public sealed class LocalReminderPresentationScenarios
             ActiveRest: null,
             LastUnobservableStartedAt: null,
             LastUnobservableEndedAt: null,
-            RecentCorrections: []);
+            RecentCorrections: [],
+            CommitmentVersion: commitmentVersion);
 
     private static ReminderNotice Notice(
         Guid commitmentId,
         DateTimeOffset now,
-        ReminderKind kind) =>
+        ReminderKind kind,
+        int commitmentVersion = 1) =>
         new(
             commitmentId,
             "test",
@@ -140,7 +173,8 @@ public sealed class LocalReminderPresentationScenarios
             Guid.NewGuid(),
             now.AddSeconds(10),
             PlaySound: true,
-            PersistentMarker: true);
+            PersistentMarker: true,
+            CommitmentVersion: commitmentVersion);
 
     private static ReminderSettings Reminders(
         bool soundEnabled = true,

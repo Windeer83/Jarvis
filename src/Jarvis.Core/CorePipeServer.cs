@@ -43,10 +43,11 @@ internal sealed class CoreCommandHandler(
                         Snapshot: projection.Snapshot);
                 }
 
-            case CoreOperations.ConfirmOfflineStarted when request.CommitmentId is not null:
+            case CoreOperations.ConfirmOfflineStarted when request.CommitmentId is not null &&
+                                                               request.ExpectedVersion is not null:
                 {
                     var result = await supervision.ConfirmOfflineStartedAsync(
-                            request.CommitmentId.Value, cancellationToken)
+                            request.CommitmentId.Value, request.ExpectedVersion.Value, cancellationToken)
                         .ConfigureAwait(false);
                     if (!result.Success)
                     {
@@ -164,10 +165,40 @@ internal sealed class CoreCommandHandler(
                         : Failure(result.ErrorCode, result.Message);
                 }
 
+            case CoreOperations.PrepareCommitmentRevision when request.RevisionDraft is not null:
+                {
+                    var result = await supervision.PrepareCommitmentRevisionAsync(
+                        request.RevisionDraft, cancellationToken).ConfigureAwait(false);
+                    return result.Success
+                        ? new CoreResponse(true, CommitmentRevisionCard: result.Value)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.ConfirmCommitmentRevision when request.CandidateId is not null:
+                {
+                    var result = await supervision.ConfirmCommitmentRevisionAsync(
+                        request.CandidateId.Value, cancellationToken).ConfigureAwait(false);
+                    return result.Success
+                        ? await SuccessAfterMutationAsync(
+                            "承诺修订已确认；新规则从确认时刻起生效，旧版本仍保留。",
+                            cancellationToken).ConfigureAwait(false)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.GetCommitmentHistory when request.CommitmentId is not null:
+                {
+                    var result = await supervision.GetCommitmentHistoryAsync(
+                        request.CommitmentId.Value, cancellationToken).ConfigureAwait(false);
+                    return result.Success
+                        ? new CoreResponse(true, CommitmentHistory: result.Value)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
             case CoreOperations.SaveActivityRule when request.ActivityRule is not null:
                 {
                     var result = await supervision.SaveActivityRuleAsync(
-                        request.ActivityRule, cancellationToken).ConfigureAwait(false);
+                        request.ActivityRule, request.ExpectedVersion, cancellationToken)
+                        .ConfigureAwait(false);
                     return result.Success
                         ? await SuccessAfterMutationAsync("活动分类规则已保存。", cancellationToken)
                             .ConfigureAwait(false)
@@ -176,10 +207,15 @@ internal sealed class CoreCommandHandler(
 
             case CoreOperations.ClassifyCurrentActivity
                 when request.CommitmentId is not null &&
+                     request.ExpectedVersion is not null && request.ActivityTarget is not null &&
+                     request.ActivityStateStartedAt is not null &&
                      request.Classification is not null && request.RuleScope is not null:
                 {
-                    var result = await supervision.ClassifyCurrentActivityAsync(
+                    var result = await supervision.ClassifyActivityAsync(
                         request.CommitmentId.Value,
+                        request.ExpectedVersion.Value,
+                        request.ActivityTarget,
+                        request.ActivityStateStartedAt.Value,
                         request.Classification.Value,
                         request.RuleScope.Value,
                         request.Note,
@@ -190,10 +226,12 @@ internal sealed class CoreCommandHandler(
                         : Failure(result.ErrorCode, result.Message);
                 }
 
-            case CoreOperations.RecordReturnIntent when request.CommitmentId is not null:
+            case CoreOperations.RecordReturnIntent when request.CommitmentId is not null &&
+                                                          request.ExpectedVersion is not null:
                 {
                     var result = await supervision.RecordReturnIntentAsync(
-                        request.CommitmentId.Value, cancellationToken).ConfigureAwait(false);
+                        request.CommitmentId.Value, request.ExpectedVersion.Value, cancellationToken)
+                        .ConfigureAwait(false);
                     return result.Success
                         ? await SuccessAfterMutationAsync(
                             "已记录马上回去；偏离计时会在稳定相关两分钟后清零。", cancellationToken)
@@ -202,10 +240,12 @@ internal sealed class CoreCommandHandler(
                 }
 
             case CoreOperations.RespondToRestPrompt
-                when request.CommitmentId is not null && request.IsResting is not null:
+                when request.CommitmentId is not null && request.ExpectedVersion is not null &&
+                     request.IsResting is not null:
                 {
                     var result = await supervision.RespondToRestPromptAsync(
-                        request.CommitmentId.Value, request.IsResting.Value, cancellationToken)
+                        request.CommitmentId.Value, request.ExpectedVersion.Value,
+                        request.IsResting.Value, cancellationToken)
                         .ConfigureAwait(false);
                     if (!result.Success && result.ErrorCode != "rest_denied")
                     {
@@ -219,10 +259,12 @@ internal sealed class CoreCommandHandler(
                         cancellationToken).ConfigureAwait(false);
                 }
 
-            case CoreOperations.StartTimedRest when request.CommitmentId is not null:
+            case CoreOperations.StartTimedRest when request.CommitmentId is not null &&
+                                                         request.ExpectedVersion is not null:
                 {
                     var result = await supervision.StartTimedRestAsync(
-                        request.CommitmentId.Value, request.RestEndAt, cancellationToken)
+                        request.CommitmentId.Value, request.ExpectedVersion.Value,
+                        request.RestEndAt, cancellationToken)
                         .ConfigureAwait(false);
                     return result.Success
                         ? await SuccessAfterMutationAsync(

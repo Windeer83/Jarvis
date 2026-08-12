@@ -23,7 +23,7 @@ public sealed class SupervisionBehaviorScenarios
             commitment.Id,
             new ActivityRule(
                 new CommitmentTarget(CommitmentTargetKind.Application, "games.exe"),
-                ActivityClassification.Distracting)))).Success);
+                ActivityClassification.Distracting)), commitment.Version)).Success);
 
         Observe(activity, clock, "games.exe", active: true);
         await module.TickAsync();
@@ -87,7 +87,7 @@ public sealed class SupervisionBehaviorScenarios
             new ActivityRule(target, ActivityClassification.Unknown)))).Success);
         Assert.True((await module.SaveActivityRuleAsync(new ActivityRuleBinding(
             ActivityRuleScope.Commitment, commitment.Id,
-            new ActivityRule(target, ActivityClassification.Related)))).Success);
+            new ActivityRule(target, ActivityClassification.Related)), commitment.Version)).Success);
 
         clock.Now = Start.AddMinutes(6);
         Observe(activity, clock, "reader.exe", active: false, idle: TimeSpan.FromMinutes(20));
@@ -276,6 +276,44 @@ public sealed class SupervisionBehaviorScenarios
     }
 
     [Fact]
+    public async Task Classifying_after_the_first_tick_materializes_and_corrects_the_pending_segment()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        var activity = new FakeActivitySource();
+        await using var module = await SupervisionModule.OpenAsync(
+            database.Path, clock, activity, new FakeReminderSink());
+        var commitment = await ConfirmComputerAsync(module, Start, "Excel.exe");
+
+        Observe(activity, clock, "mystery.exe", active: true);
+        await module.TickAsync();
+        var captured = (await module.GetSnapshotAsync()).ActiveSupervision!;
+        Assert.Equal(ActivityClassification.Unknown, captured.Classification);
+
+        clock.Now = Start.AddSeconds(30);
+        var corrected = await module.ClassifyActivityAsync(
+            commitment.Id,
+            commitment.Version,
+            captured.ActionableTarget!,
+            captured.ActivityStateStartedAt!.Value,
+            ActivityClassification.Related,
+            ActivityRuleScope.Commitment,
+            "research is related");
+
+        Assert.True(corrected.Success, corrected.Message);
+        var history = (await module.GetCommitmentHistoryAsync(commitment.Id)).Value!;
+        var segment = Assert.Single(history.ActivitySegments);
+        Assert.Equal(Start, segment.StartAt);
+        Assert.Equal(Start.AddSeconds(30), segment.EndAt);
+        Assert.Equal(1, segment.CommitmentVersion);
+        Assert.Equal(ActivityAvailability.Available, segment.Availability);
+        Assert.Equal("mystery.exe", segment.Target!.Value);
+        Assert.Equal(ActivityClassification.Unknown, segment.OriginalClassification);
+        Assert.Equal(ActivityClassification.Related, segment.EffectiveClassification);
+        Assert.Equal(segment.Id, Assert.Single(history.Corrections).ActivitySegmentId);
+    }
+
+    [Fact]
     public async Task Failed_classification_transaction_leaves_no_rule_correction_runtime_or_notice()
     {
         using var database = new TemporaryDatabase();
@@ -325,6 +363,7 @@ public sealed class SupervisionBehaviorScenarios
         await Assert.ThrowsAsync<SqliteException>(() => store.PersistClassificationForTestAsync(
             [binding, globalBinding],
             correction,
+            pendingSegment: null,
             runtime,
             notice,
             async (connection, transaction, cancellationToken) =>
@@ -361,7 +400,7 @@ public sealed class SupervisionBehaviorScenarios
                 commitment.Id,
                 new ActivityRule(
                     new CommitmentTarget(CommitmentTargetKind.Application, "games.exe"),
-                    ActivityClassification.Distracting)))).Success);
+                    ActivityClassification.Distracting)), commitment.Version)).Success);
             clock.Now = Start.AddMinutes(5);
             Observe(activity, clock, "games.exe", active: true);
             await module.TickAsync();

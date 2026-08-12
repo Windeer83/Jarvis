@@ -365,7 +365,11 @@ internal sealed partial class SqliteCommitmentStore
                 revised.EndAt,
                 request.Kind == RecurrenceChangeKind.Skip
                     ? RecurrenceOccurrenceStatus.Skipped
-                    : occurrence.Status);
+                    : occurrence.Status,
+                commitments.Single(item => item.Id == occurrence.CommitmentId).Version,
+                request.Kind == RecurrenceChangeKind.Adjust
+                    ? commitments.Single(item => item.Id == occurrence.CommitmentId).Version + 1
+                    : commitments.Single(item => item.Id == occurrence.CommitmentId).Version);
         }).ToArray();
         return SupervisionResult<RecurrenceChangeCard>.Ok(new RecurrenceChangeCard(
             Guid.NewGuid(),
@@ -373,11 +377,13 @@ internal sealed partial class SqliteCommitmentStore
             request.Kind,
             request.Scope,
             previews,
-            $"尚未写入；确认后将影响 {previews.Length} 个未来发生项。"));
+            $"尚未写入；确认后将影响 {previews.Length} 个未来发生项。",
+            request.Kind == RecurrenceChangeKind.Adjust ? request.Reason?.Trim() : null));
     }
 
     public async Task<SupervisionResult<RecurrencePlanView>> ChangeRecurrenceAsync(
         RecurrenceChangeRequest request,
+        RecurrenceChangeCard expectedCard,
         IReadOnlyList<StoredCommitment> commitments,
         DateTimeOffset now,
         CancellationToken cancellationToken)
@@ -395,6 +401,51 @@ internal sealed partial class SqliteCommitmentStore
         var affectedIds = affected.Select(item => item.CommitmentId).ToHashSet();
         var revised = prepared.Value.Revised;
 
+        if (expectedCard.PlanId != request.PlanId || expectedCard.Kind != request.Kind ||
+            expectedCard.Scope != request.Scope || expectedCard.AffectedOccurrences.Count != affected.Length)
+        {
+            return SupervisionResult<RecurrencePlanView>.Fail(
+                "commitment_version_stale", "重复发生项已经变化，请重新预览整个修改。");
+        }
+
+        var expectedById = expectedCard.AffectedOccurrences.ToDictionary(item => item.CommitmentId);
+        for (var index = 0; index < affected.Length; index++)
+        {
+            var occurrence = affected[index];
+            var existing = commitments.Single(item => item.Id == occurrence.CommitmentId);
+            if (!expectedById.TryGetValue(occurrence.CommitmentId, out var expected) ||
+                expected.BeforeVersion != existing.Version ||
+                expected.BeforeStartAt != occurrence.StartAt ||
+                expected.BeforeEndAt != occurrence.EndAt ||
+                expected.BeforeStatus != occurrence.Status ||
+                expected.AfterStartAt != revised[index].StartAt ||
+                expected.AfterEndAt != revised[index].EndAt ||
+                expected.AfterStatus != (request.Kind == RecurrenceChangeKind.Skip
+                    ? RecurrenceOccurrenceStatus.Skipped
+                    : occurrence.Status))
+            {
+                return SupervisionResult<RecurrencePlanView>.Fail(
+                    "commitment_version_stale", "重复发生项已经变化，请重新预览整个修改。");
+            }
+        }
+
+        var replacements = affected.Select((occurrence, index) =>
+            new RecurrenceOccurrenceView(
+                occurrence.CommitmentId,
+                occurrence.Date,
+                revised[index].StartAt,
+                revised[index].EndAt,
+                request.Kind == RecurrenceChangeKind.Skip
+                    ? RecurrenceOccurrenceStatus.Skipped
+                    : occurrence.Status))
+            .ToDictionary(item => item.CommitmentId);
+        var updated = plan with
+        {
+            Occurrences = plan.Occurrences
+                .Select(item => replacements.GetValueOrDefault(item.CommitmentId, item))
+                .ToArray()
+        };
+
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -411,26 +462,51 @@ internal sealed partial class SqliteCommitmentStore
 
         for (var index = 0; index < affected.Length; index++)
         {
+            var expected = expectedById[affected[index].CommitmentId];
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
             if (request.Kind == RecurrenceChangeKind.Skip)
             {
-                command.CommandText = "UPDATE commitments SET is_skipped=1 WHERE id=$id;";
+                command.CommandText = """
+                    UPDATE commitments SET is_skipped=1
+                    WHERE id=$id AND current_version=$version AND is_skipped=0
+                      AND start_at_utc=$beforeStart AND end_at_utc=$beforeEnd;
+                    """;
             }
             else
             {
-                command.CommandText = "UPDATE commitments SET start_at_utc=$start,end_at_utc=$end WHERE id=$id;";
+                command.CommandText = """
+                    UPDATE commitments SET start_at_utc=$start,end_at_utc=$end,
+                        current_version=current_version+1
+                    WHERE id=$id AND current_version=$version AND is_skipped=0
+                      AND start_at_utc=$beforeStart AND end_at_utc=$beforeEnd;
+                    """;
                 command.Parameters.AddWithValue("$start", FormatInstant(revised[index].StartAt));
                 command.Parameters.AddWithValue("$end", FormatInstant(revised[index].EndAt));
             }
 
             command.Parameters.AddWithValue("$id", affected[index].CommitmentId.ToString("D"));
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            command.Parameters.AddWithValue("$version", expected.BeforeVersion);
+            command.Parameters.AddWithValue("$beforeStart", FormatInstant(expected.BeforeStartAt));
+            command.Parameters.AddWithValue("$beforeEnd", FormatInstant(expected.BeforeEndAt));
+            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                return SupervisionResult<RecurrencePlanView>.Fail(
+                    "commitment_version_stale", "重复发生项已经变化，请重新预览整个修改。");
+            }
+            if (request.Kind == RecurrenceChangeKind.Adjust)
+            {
+                var existing = commitments.Single(item => item.Id == affected[index].CommitmentId);
+                await SqliteCommitmentStore.InsertCommitmentVersionAsync(
+                    connection, transaction, existing.Id, expected.BeforeVersion + 1, now, now,
+                    request.Reason!.Trim(), revised[index],
+                    await ReadScopedRulesAsync(
+                        connection, ActivityRuleScope.Commitment, existing.Id, cancellationToken)
+                        .ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+            }
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        var updated = (await ReadPlansAsync(cancellationToken).ConfigureAwait(false))
-            .Single(item => item.Id == plan.Id);
         return SupervisionResult<RecurrencePlanView>.Ok(updated);
     }
 
@@ -488,6 +564,12 @@ internal sealed partial class SqliteCommitmentStore
             return SupervisionResult<PreparedRecurrenceChange>.Fail("recurrence_adjustment_required", "调整需要新的开始时间或持续时长。");
         }
 
+        if (request.Kind == RecurrenceChangeKind.Adjust && string.IsNullOrWhiteSpace(request.Reason))
+        {
+            return SupervisionResult<PreparedRecurrenceChange>.Fail(
+                "revision_reason_required", "调整重复发生项必须保存自然语言原因。");
+        }
+
         if (request.NewDurationMinutes is <= 0)
         {
             return SupervisionResult<PreparedRecurrenceChange>.Fail("duration_invalid", "持续时长必须大于 0 分钟。");
@@ -505,7 +587,7 @@ internal sealed partial class SqliteCommitmentStore
             return new CommitmentCard(
                 Guid.Empty, existing.Kind, start, end, existing.InputGoal, existing.OutcomeGoal,
                 existing.RelatedAppsOrSites, existing.SupervisionMode, existing.ReminderSettings, "",
-                [], new RestSettings(10, 15));
+                [], existing.RestSettings, existing.TemplateId);
         }).ToArray();
         if (revised.Any(card => card.StartAt <= now))
         {
