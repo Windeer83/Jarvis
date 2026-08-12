@@ -141,7 +141,7 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
 
         try
         {
-            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            Process.Start(DesktopProcessLauncher.CreateStartInfo(path, Environment.ProcessPath));
         }
         catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
