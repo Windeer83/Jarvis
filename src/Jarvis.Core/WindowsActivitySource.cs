@@ -1,11 +1,17 @@
 using System.Diagnostics;
+using System.Net;
 using System.Runtime.InteropServices;
+using System.Windows.Automation;
 using Jarvis.Contracts;
 
 namespace Jarvis.Core;
 
 public sealed class WindowsActivitySource(IClock clock) : IActivitySource
 {
+    private static readonly HashSet<string> BrowserProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "chrome", "msedge", "firefox", "brave", "vivaldi", "opera"
+    };
     private const ulong ActiveThresholdMilliseconds = 60_000;
     private const int WtsCurrentServerHandle = 0;
     private const int WtsSessionInfoEx = 25;
@@ -30,13 +36,19 @@ public sealed class WindowsActivitySource(IClock clock) : IActivitySource
                 return ValueTask.FromResult(Unobservable());
             }
 
-            var foregroundProcess = GetForegroundProcessName();
+            var foreground = GetForegroundProcess();
+            var foregroundWebsiteDomain = foreground.ProcessName is not null &&
+                                          BrowserProcessNames.Contains(foreground.ProcessName)
+                ? BrowserHostnameReader.Read(foreground.Window)
+                : null;
             var idleMilliseconds = unchecked((uint)Environment.TickCount - input.Time);
             return ValueTask.FromResult(new ActivityObservation(
                 ActivityAvailability.Available,
                 idleMilliseconds < ActiveThresholdMilliseconds,
-                foregroundProcess,
-                clock.Now));
+                foreground.ProcessName,
+                clock.Now,
+                ForegroundWebsiteDomain: foregroundWebsiteDomain,
+                IdleDuration: TimeSpan.FromMilliseconds(idleMilliseconds)));
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -48,24 +60,26 @@ public sealed class WindowsActivitySource(IClock clock) : IActivitySource
         ActivityAvailability.Unobservable,
         IsUserActive: false,
         ForegroundProcess: null,
-        clock.Now);
+        clock.Now,
+        ForegroundWebsiteDomain: null,
+        IdleDuration: null);
 
-    private static string? GetForegroundProcessName()
+    private static (IntPtr Window, string? ProcessName) GetForegroundProcess()
     {
         var window = GetForegroundWindow();
         if (window == IntPtr.Zero)
         {
-            return null;
+            return (IntPtr.Zero, null);
         }
 
         _ = GetWindowThreadProcessId(window, out var processId);
         if (processId == 0)
         {
-            return null;
+            return (window, null);
         }
 
         using var process = Process.GetProcessById((int)processId);
-        return process.ProcessName;
+        return (window, process.ProcessName);
     }
 
     private static bool IsCurrentSessionUnlocked()

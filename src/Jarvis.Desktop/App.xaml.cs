@@ -46,6 +46,11 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs eventArgs)
     {
+        if (MainWindow is Jarvis.Desktop.MainWindow window)
+        {
+            window.StopForApplicationExit();
+        }
+
         if (_shutdown is not null)
         {
             _shutdown.Cancel();
@@ -88,18 +93,12 @@ public partial class App : Application
 
             _ = Dispatcher.BeginInvoke(() =>
             {
-                if (MainWindow is null)
+                if (MainWindow is not Jarvis.Desktop.MainWindow window)
                 {
                     return;
                 }
 
-                if (MainWindow.WindowState == WindowState.Minimized)
-                {
-                    MainWindow.WindowState = WindowState.Normal;
-                }
-
-                MainWindow.Show();
-                MainWindow.Activate();
+                window.RestoreConfigurationWindow();
             });
         }
     }

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
@@ -11,7 +12,10 @@ public partial class MainWindow : Window
     private static readonly char[] TargetSeparators = [',', '，', ';', '；', '\n', '\r'];
     private readonly CoreClient _coreClient = new();
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly ReminderOverlayWindow _reminderOverlay = new();
     private CommitmentCard? _candidate;
+    private SupervisionSnapshot? _snapshot;
+    private readonly LocalReminderSoundGate _soundGate = new();
     private bool _refreshing;
 
     public MainWindow()
@@ -22,6 +26,9 @@ public partial class MainWindow : Window
         KindBox.SelectedItem = CommitmentKind.Computer;
         ModeBox.ItemsSource = Enum.GetValues<SupervisionMode>();
         ModeBox.SelectedItem = SupervisionMode.Interactive;
+        RuleScopeBox.ItemsSource = RuleScopeChoices;
+        RuleScopeBox.DisplayMemberPath = nameof(RuleScopeChoice.Label);
+        RuleScopeBox.SelectedIndex = 0;
 
         var suggestedStart = DateTime.Now.AddMinutes(5);
         StartDatePicker.SelectedDate = suggestedStart.Date;
@@ -29,12 +36,17 @@ public partial class MainWindow : Window
         DurationBox.Text = "60";
 
         _refreshTimer.Tick += async (_, _) => await RefreshSnapshotAsync();
+        _reminderOverlay.RestoreRequested += (_, _) => RestoreConfigurationWindow();
         Loaded += async (_, _) =>
         {
             _refreshTimer.Start();
             await RefreshSnapshotAsync();
         };
-        Closed += (_, _) => _refreshTimer.Stop();
+        Closing += (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            Hide();
+        };
     }
 
     private async void PreviewButton_Click(object sender, RoutedEventArgs eventArgs)
@@ -169,6 +181,7 @@ public partial class MainWindow : Window
                 CommitmentGrid.SelectedItem = null;
                 ConfirmOfflineButton.IsEnabled = false;
                 LatestReminderText.Text = "";
+                ClearSupervisionProjection();
                 return;
             }
 
@@ -189,6 +202,7 @@ public partial class MainWindow : Window
         }
 
         CommitmentGrid.ItemsSource = snapshot.Commitments;
+        _snapshot = snapshot;
         var active = snapshot.Commitments.SingleOrDefault(commitment =>
             commitment.Id == snapshot.ActiveComputerCommitmentId);
         ProjectionText.Text = active is null
@@ -197,6 +211,7 @@ public partial class MainWindow : Window
         LatestReminderText.Text = snapshot.LatestReminder is null
             ? ""
             : $"最近提示：{snapshot.LatestReminder.Message}";
+        ApplyActiveSupervision(snapshot, active);
     }
 
     private bool TryBuildDraft(out CommitmentDraft draft, out string validationMessage)
@@ -238,7 +253,10 @@ public partial class MainWindow : Window
             OutcomeGoalBox.Text,
             targets,
             ModeBox.SelectedItem is SupervisionMode mode ? mode : null,
-            ReminderSettings: null);
+            ReminderSettings: null,
+            ActivityRules: null,
+            RestSettings: null,
+            TemplateId: null);
         return true;
     }
 
@@ -270,6 +288,7 @@ public partial class MainWindow : Window
             相关项目：{targets}
             监督模式：{(card.Kind == CommitmentKind.Offline ? "不适用（线下不自动监督）" : card.SupervisionMode == SupervisionMode.Interactive ? "交互型" : "被动型")}
             提醒：开始提示仅本机；偏离 {card.ReminderSettings.LocalDeviationMinutes} 分钟本机提醒，{card.ReminderSettings.FirstMobileDeviationMinutes} 分钟首次手机提醒，此后每 {card.ReminderSettings.MobileRepeatMinutes} 分钟，最多 {card.ReminderSettings.MaxMobileReminders} 条
+            休息：交互型空闲 {card.RestSettings!.IdlePromptMinutes} 分钟询问；默认从空闲起共休息 {card.RestSettings.DefaultTotalRestMinutes} 分钟
 
             {card.ConfirmationNotice}
             """;
@@ -296,4 +315,252 @@ public partial class MainWindow : Window
         CommitmentPhase.AwaitingReview => "待回顾",
         _ => phase.ToString()
     };
+
+    private async void ReturnNowButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendActiveOperationAsync(new CoreRequest(
+            CoreOperations.RecordReturnIntent,
+            CommitmentId: _snapshot?.ActiveComputerCommitmentId));
+
+    private async void CurrentRelatedButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await ClassifyCurrentActivityAsync(ActivityClassification.Related);
+
+    private async void CurrentDistractingButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await ClassifyCurrentActivityAsync(ActivityClassification.Distracting);
+
+    private async Task ClassifyCurrentActivityAsync(ActivityClassification classification)
+    {
+        var scope = RuleScopeBox.SelectedItem is RuleScopeChoice selected
+            ? selected.Scope
+            : ActivityRuleScope.Commitment;
+        if (scope == ActivityRuleScope.Template &&
+            ActiveCommitment()?.TemplateId is null)
+        {
+            SetOperationStatus("这条承诺不来自模板，请选择“单次承诺”或“全局”。", isError: true);
+            return;
+        }
+
+        await SendActiveOperationAsync(new CoreRequest(
+            CoreOperations.ClassifyCurrentActivity,
+            CommitmentId: _snapshot?.ActiveComputerCommitmentId,
+            Classification: classification,
+            RuleScope: scope));
+    }
+
+    private async void AcceptRestButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendActiveOperationAsync(new CoreRequest(
+            CoreOperations.RespondToRestPrompt,
+            CommitmentId: _snapshot?.ActiveComputerCommitmentId,
+            IsResting: true));
+
+    private async void DenyRestButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendActiveOperationAsync(new CoreRequest(
+            CoreOperations.RespondToRestPrompt,
+            CommitmentId: _snapshot?.ActiveComputerCommitmentId,
+            IsResting: false));
+
+    private async void StartTimedRestButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!TimeSpan.TryParseExact(
+                RestEndTimeBox.Text.Trim(), ["h\\:mm", "hh\\:mm"],
+                CultureInfo.InvariantCulture, out var time))
+        {
+            SetOperationStatus("请输入明确的休息结束时间（HH:mm）。", isError: true);
+            return;
+        }
+
+        var now = DateTime.Now;
+        var localEnd = DateTime.SpecifyKind(now.Date + time, DateTimeKind.Local);
+        if (localEnd <= now)
+        {
+            SetOperationStatus("休息结束时间必须晚于现在。", isError: true);
+            return;
+        }
+
+        await SendActiveOperationAsync(new CoreRequest(
+            CoreOperations.StartTimedRest,
+            CommitmentId: _snapshot?.ActiveComputerCommitmentId,
+            RestEndAt: new DateTimeOffset(localEnd)));
+    }
+
+    private void PresentationMode_Changed(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_snapshot is not null)
+        {
+            ApplyActiveSupervision(_snapshot, ActiveCommitment());
+        }
+    }
+
+    private async Task SendActiveOperationAsync(CoreRequest request)
+    {
+        if (request.CommitmentId is null)
+        {
+            SetOperationStatus("当前没有正在自动监督的电脑型承诺。", isError: true);
+            return;
+        }
+
+        var response = await _coreClient.SendAsync(request);
+        SetOperationStatus(response.Message ?? (response.Success ? "已处理。" : "操作失败。"), !response.Success);
+        if (response.Success)
+        {
+            ApplySnapshot(response.Snapshot);
+        }
+    }
+
+    private void ApplyActiveSupervision(SupervisionSnapshot snapshot, CommitmentView? commitment)
+    {
+        var state = snapshot.ActiveSupervision;
+        if (state is null || commitment is null)
+        {
+            ClearSupervisionProjection();
+            return;
+        }
+
+        SupervisionPanel.Visibility = Visibility.Visible;
+        var classification = state.Classification switch
+        {
+            ActivityClassification.Related => "相关",
+            ActivityClassification.Distracting => "分心",
+            ActivityClassification.Unknown => "未确定",
+            _ => "无法观察"
+        };
+        var deviation = state.DeviationStartedAt is null
+            ? "当前没有连续偏离"
+            : $"连续偏离 {FormatDuration(state.CountedDeviation)}（起点 {state.DeviationStartedAt.Value.ToLocalTime():HH:mm:ss}）";
+        var rest = state.ActiveRest is null
+            ? ""
+            : $" · 限时休息至 {state.ActiveRest.EndAt.ToLocalTime():HH:mm}";
+        ActiveSupervisionText.Text =
+            $"{DisplayTitle(commitment)} · 活动：{classification}{(state.IsIdle ? " / 空闲" : "")} · {deviation}{rest}";
+        AcceptRestButton.Visibility = state.PendingPrompt == SupervisionPromptKind.ConfirmRest
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        DenyRestButton.Visibility = AcceptRestButton.Visibility;
+        RuleScopeBox.IsEnabled = state.Classification == ActivityClassification.Unknown ||
+                                 state.ReminderMarkerActive;
+
+        var reminder = snapshot.LatestReminder;
+        var isFullscreen = ForegroundPresentationDetector.IsFullscreen();
+        FullscreenStateText.Text = $"全屏自动识别：{(isFullscreen ? "是" : "否")}";
+        var presentation = LocalReminderPresentation.Evaluate(
+            reminder,
+            state,
+            commitment.Id,
+            snapshot.Now,
+            QuietModeBox.IsChecked == true,
+            isFullscreen,
+            MuteSoundBox.IsChecked == true);
+        ReminderMarkerText.Visibility = presentation.ShowMarker
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        ReminderBubble.Visibility = presentation.ShowBubble ? Visibility.Visible : Visibility.Collapsed;
+        if (presentation.ShowBubble)
+        {
+            ReminderBubbleText.Text = reminder!.Message;
+        }
+
+        if (presentation.ShowOverlay)
+        {
+            _reminderOverlay.Present(
+                presentation.ShowBubble
+                    ? reminder!.Message
+                    : $"{DisplayTitle(commitment)}：有待处理提醒");
+        }
+        else
+        {
+            _reminderOverlay.Hide();
+        }
+
+        if (_soundGate.Consume(
+                reminder,
+                commitment.Id,
+                snapshot.Now,
+                presentation.SuppressSound))
+        {
+            GentleReminderSound.Play();
+        }
+    }
+
+    private void ClearSupervisionProjection()
+    {
+        _snapshot = null;
+        SupervisionPanel.Visibility = Visibility.Collapsed;
+        ReminderBubble.Visibility = Visibility.Collapsed;
+        ReminderMarkerText.Visibility = Visibility.Collapsed;
+        _reminderOverlay.Hide();
+    }
+
+    private CommitmentView? ActiveCommitment() => _snapshot?.Commitments.SingleOrDefault(
+        commitment => commitment.Id == _snapshot.ActiveComputerCommitmentId);
+
+    public void RestoreConfigurationWindow()
+    {
+        Show();
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        Activate();
+    }
+
+    public void StopForApplicationExit()
+    {
+        _refreshTimer.Stop();
+        _reminderOverlay.Close();
+    }
+
+    private static string FormatDuration(TimeSpan value) =>
+        value.TotalHours >= 1
+            ? $"{(int)value.TotalHours}小时 {value.Minutes}分"
+            : $"{Math.Max(0, (int)value.TotalMinutes)}分 {Math.Max(0, value.Seconds)}秒";
+
+    private static readonly RuleScopeChoice[] RuleScopeChoices =
+    [
+        new("仅这次承诺", ActivityRuleScope.Commitment),
+        new("同一模板", ActivityRuleScope.Template),
+        new("全局默认", ActivityRuleScope.Global)
+    ];
+
+    private sealed record RuleScopeChoice(string Label, ActivityRuleScope Scope);
+}
+
+internal static class GentleReminderSound
+{
+    public static void Play() => _ = Task.Run(PlaySynchronously);
+
+    private static void PlaySynchronously()
+    {
+        const int sampleRate = 16_000;
+        const int durationMilliseconds = 800;
+        const double frequency = 440;
+        const short amplitude = 1_800;
+        var sampleCount = sampleRate * durationMilliseconds / 1000;
+        using var stream = new MemoryStream(44 + sampleCount * sizeof(short));
+        using (var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true))
+        {
+            writer.Write("RIFF"u8);
+            writer.Write(36 + sampleCount * sizeof(short));
+            writer.Write("WAVEfmt "u8);
+            writer.Write(16);
+            writer.Write((short)1);
+            writer.Write((short)1);
+            writer.Write(sampleRate);
+            writer.Write(sampleRate * sizeof(short));
+            writer.Write((short)sizeof(short));
+            writer.Write((short)16);
+            writer.Write("data"u8);
+            writer.Write(sampleCount * sizeof(short));
+            for (var index = 0; index < sampleCount; index++)
+            {
+                var envelope = Math.Min(1d, index / 800d) *
+                               Math.Min(1d, (sampleCount - index) / 1600d);
+                writer.Write((short)(amplitude * envelope *
+                    Math.Sin(2 * Math.PI * frequency * index / sampleRate)));
+            }
+        }
+
+        stream.Position = 0;
+        using var player = new System.Media.SoundPlayer(stream);
+        player.PlaySync();
+    }
 }

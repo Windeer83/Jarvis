@@ -61,6 +61,73 @@ internal sealed class CoreCommandHandler(SupervisionModule supervision)
                         Snapshot: projection.Snapshot);
                 }
 
+            case CoreOperations.SaveActivityRule when request.ActivityRule is not null:
+                {
+                    var result = await supervision.SaveActivityRuleAsync(
+                        request.ActivityRule, cancellationToken).ConfigureAwait(false);
+                    return result.Success
+                        ? await SuccessAfterMutationAsync("活动分类规则已保存。", cancellationToken)
+                            .ConfigureAwait(false)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.ClassifyCurrentActivity
+                when request.CommitmentId is not null &&
+                     request.Classification is not null && request.RuleScope is not null:
+                {
+                    var result = await supervision.ClassifyCurrentActivityAsync(
+                        request.CommitmentId.Value,
+                        request.Classification.Value,
+                        request.RuleScope.Value,
+                        request.Note,
+                        cancellationToken).ConfigureAwait(false);
+                    return result.Success
+                        ? await SuccessAfterMutationAsync("已保存分类并纠正本次活动记录。", cancellationToken)
+                            .ConfigureAwait(false)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.RecordReturnIntent when request.CommitmentId is not null:
+                {
+                    var result = await supervision.RecordReturnIntentAsync(
+                        request.CommitmentId.Value, cancellationToken).ConfigureAwait(false);
+                    return result.Success
+                        ? await SuccessAfterMutationAsync(
+                            "已记录马上回去；偏离计时会在稳定相关两分钟后清零。", cancellationToken)
+                            .ConfigureAwait(false)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
+            case CoreOperations.RespondToRestPrompt
+                when request.CommitmentId is not null && request.IsResting is not null:
+                {
+                    var result = await supervision.RespondToRestPromptAsync(
+                        request.CommitmentId.Value, request.IsResting.Value, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (!result.Success && result.ErrorCode != "rest_denied")
+                    {
+                        return Failure(result.ErrorCode, result.Message);
+                    }
+
+                    return await SuccessAfterMutationAsync(
+                        result.Success
+                            ? $"已确认限时休息至 {result.Value!.EndAt.ToLocalTime():HH:mm}。"
+                            : result.Message!,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+            case CoreOperations.StartTimedRest when request.CommitmentId is not null:
+                {
+                    var result = await supervision.StartTimedRestAsync(
+                        request.CommitmentId.Value, request.RestEndAt, cancellationToken)
+                        .ConfigureAwait(false);
+                    return result.Success
+                        ? await SuccessAfterMutationAsync(
+                            $"已开始限时休息，{result.Value!.EndAt.ToLocalTime():HH:mm} 自动恢复监督。",
+                            cancellationToken).ConfigureAwait(false)
+                        : Failure(result.ErrorCode, result.Message);
+                }
+
             case CoreOperations.GetSnapshot:
                 return new CoreResponse(
                     true,
@@ -73,6 +140,20 @@ internal sealed class CoreCommandHandler(SupervisionModule supervision)
 
     private static CoreResponse Failure(string? errorCode, string? message) =>
         new(false, errorCode ?? "operation_failed", message ?? "操作失败。");
+
+    private async Task<CoreResponse> SuccessAfterMutationAsync(
+        string message,
+        CancellationToken cancellationToken)
+    {
+        var projection = await TryReadProjectionAfterMutationAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return new CoreResponse(
+            true,
+            Message: projection.IsAvailable
+                ? message
+                : $"{message} 当前状态暂时无法刷新，请稍后刷新。",
+            Snapshot: projection.Snapshot);
+    }
 
     private async Task<(bool IsAvailable, SupervisionSnapshot? Snapshot)>
         TryReadProjectionAfterMutationAsync(CancellationToken cancellationToken)

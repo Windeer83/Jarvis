@@ -88,7 +88,7 @@ public sealed class CorePipeScenarios
     }
 
     [Fact]
-    public async Task Confirm_is_not_coupled_to_reminder_delivery_after_database_commit()
+    public async Task Reminder_delivery_failure_does_not_repeat_the_formal_reminder()
     {
         using var database = new TemporaryDatabase();
         var now = new DateTimeOffset(2026, 8, 12, 9, 0, 0, TimeSpan.FromHours(8));
@@ -125,9 +125,78 @@ public sealed class CorePipeScenarios
 
         Assert.True(confirm.Success);
         Assert.Equal(0, reminderSink.AttemptCount);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => module.TickAsync());
+        await module.TickAsync();
+        Assert.Equal(1, reminderSink.AttemptCount);
+        await module.TickAsync();
         Assert.Equal(1, reminderSink.AttemptCount);
         Assert.Single((await module.GetSnapshotAsync()).Commitments);
+    }
+
+    [Fact]
+    public async Task Desktop_supervision_actions_reach_the_authoritative_core_projection()
+    {
+        using var database = new TemporaryDatabase();
+        var start = new DateTimeOffset(2026, 8, 12, 9, 0, 0, TimeSpan.FromHours(8));
+        var clock = new FakeClock(start);
+        var activity = new FakeActivitySource
+        {
+            Next = new ActivityObservation(
+                ActivityAvailability.Available,
+                IsUserActive: true,
+                ForegroundProcess: "games.exe",
+                start,
+                IdleDuration: TimeSpan.Zero)
+        };
+        await using var module = await SupervisionModule.OpenAsync(
+            database.Path, clock, activity, new FakeReminderSink());
+        var pipeName = $"Jarvis.Core.Tests.{Guid.NewGuid():N}";
+        await using var server = new CorePipeServer(pipeName, new CoreCommandHandler(module));
+        server.Start();
+
+        var prepare = await SendAsync(pipeName, new CoreRequest(
+            CoreOperations.Prepare,
+            Draft: new CommitmentDraft(
+                CommitmentKind.Computer, start, EndAt: null, DurationMinutes: 60,
+                InputGoal: "IPC监督动作", OutcomeGoal: null,
+                RelatedAppsOrSites:
+                [
+                    new CommitmentTarget(CommitmentTargetKind.Application, "Excel.exe")
+                ],
+                SupervisionMode.Interactive, ReminderSettings: null)));
+        var confirm = await SendAsync(pipeName, new CoreRequest(
+            CoreOperations.Confirm, CandidateId: prepare.Card!.CandidateId));
+        var commitmentId = confirm.Snapshot!.Commitments.Single().Id;
+
+        var saved = await SendAsync(pipeName, new CoreRequest(
+            CoreOperations.SaveActivityRule,
+            ActivityRule: new ActivityRuleBinding(
+                ActivityRuleScope.Commitment,
+                commitmentId,
+                new ActivityRule(
+                    new CommitmentTarget(CommitmentTargetKind.Application, "games.exe"),
+                    ActivityClassification.Distracting))));
+        Assert.True(saved.Success);
+
+        await module.TickAsync();
+        var returned = await SendAsync(pipeName, new CoreRequest(
+            CoreOperations.RecordReturnIntent,
+            CommitmentId: commitmentId));
+        Assert.True(returned.Success);
+        Assert.Equal(start, returned.Snapshot!.ActiveSupervision!.ReturnIntentAt);
+
+        var missingEnd = await SendAsync(pipeName, new CoreRequest(
+            CoreOperations.StartTimedRest,
+            CommitmentId: commitmentId));
+        Assert.False(missingEnd.Success);
+        Assert.Equal("rest_end_required", missingEnd.ErrorCode);
+
+        var startedRest = await SendAsync(pipeName, new CoreRequest(
+            CoreOperations.StartTimedRest,
+            CommitmentId: commitmentId,
+            RestEndAt: start.AddMinutes(10)));
+        Assert.True(startedRest.Success);
+        Assert.Equal(start.AddMinutes(10),
+            startedRest.Snapshot!.ActiveSupervision!.ActiveRest!.EndAt);
     }
 
     [Fact]
