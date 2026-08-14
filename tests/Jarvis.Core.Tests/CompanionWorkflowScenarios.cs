@@ -197,6 +197,68 @@ public sealed class CompanionWorkflowScenarios
     }
 
     [Fact]
+    public async Task Cloud_ai_hard_cap_resumes_only_after_the_user_explicitly_raises_it()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        await using var supervision = await SupervisionModule.OpenAsync(
+            database.Path, clock, new FakeActivitySource(), new FakeReminderSink());
+        var provider = new FakeAiProvider();
+        var credentials = new FakeCredentialStore();
+        await using (var companion = await CompanionModule.OpenAsync(
+                         database.Path, supervision, clock, new FakeWorktimeChannel(), provider, credentials))
+        {
+            await companion.DispatchAsync(new SaveAiCredentialCommand("sk-test-1234"));
+            var store = new SqliteCompanionStore(database.Path);
+            Assert.True(await store.TryReserveAiRequestAsync(new AiRequestRecordView(
+                Guid.NewGuid(), clock.Now, AiRequestPurpose.BasicChat, "DeepSeek", "deepseek-v4-flash",
+                0, 0, 0, "test", 30m, false), CancellationToken.None));
+
+            var blocked = await companion.DispatchAsync(new RequestAiChatCommand("先不要调用云端"));
+            Assert.False(blocked.Success);
+            Assert.Equal("ai_monthly_cap_reached", blocked.ErrorCode);
+            var atLimit = await companion.SnapshotAsync();
+            Assert.Equal(30m, atLimit.Ai.MonthlyHardCapCny);
+            Assert.True(atLimit.Ai.Alert15Reached);
+            Assert.True(atLimit.Ai.Alert24Reached);
+            Assert.Equal(0, provider.CallCount);
+
+            Assert.True((await companion.DispatchAsync(new SetAiMonthlyHardCapCommand(35m))).Success);
+            var resumed = await companion.DispatchAsync(new RequestAiChatCommand("现在可以调用云端"));
+            Assert.True(resumed.Success, resumed.Message);
+            Assert.Equal(1, provider.CallCount);
+        }
+
+        await using var restarted = await CompanionModule.OpenAsync(
+            database.Path, supervision, clock, new FakeWorktimeChannel(), provider, credentials);
+        Assert.Equal(35m, (await restarted.SnapshotAsync()).Ai.MonthlyHardCapCny);
+    }
+
+    [Fact]
+    public async Task Cloud_ai_processing_state_is_visible_while_the_provider_call_is_in_flight()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        await using var supervision = await SupervisionModule.OpenAsync(
+            database.Path, clock, new FakeActivitySource(), new FakeReminderSink());
+        var provider = new FakeAiProvider
+        {
+            Started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+            Release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        await using var companion = await CompanionModule.OpenAsync(
+            database.Path, supervision, clock, new FakeWorktimeChannel(), provider, new FakeCredentialStore());
+        await companion.DispatchAsync(new SaveAiCredentialCommand("sk-test-1234"));
+
+        var pending = companion.DispatchAsync(new RequestAiChatCommand("等待云端回复"));
+        await provider.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True((await companion.SnapshotAsync()).Ai.IsRequestInProgress);
+        provider.Release.SetResult(true);
+        Assert.True((await pending).Success);
+        Assert.False((await companion.SnapshotAsync()).Ai.IsRequestInProgress);
+    }
+
+    [Fact]
     public async Task Natural_language_creates_only_a_candidate_then_core_confirms_it()
     {
         using var database = new TemporaryDatabase();
@@ -389,6 +451,12 @@ public sealed class CompanionWorkflowScenarios
         var command = Assert.IsType<InterpretNaturalLanguageCommand>(roundTrip!.Companion);
         Assert.Equal(CandidateSource.Feishu, command.Source);
         Assert.Equal("明天上午写报告", command.Text);
+
+        var capJson = JsonSerializer.Serialize(new CoreRequest(
+            CoreOperations.DispatchCompanion,
+            Companion: new SetAiMonthlyHardCapCommand(35m)), CoreProtocol.Json);
+        var capRoundTrip = JsonSerializer.Deserialize<CoreRequest>(capJson, CoreProtocol.Json);
+        Assert.Equal(35m, Assert.IsType<SetAiMonthlyHardCapCommand>(capRoundTrip!.Companion).HardCapCny);
     }
 
     [Fact]
@@ -1108,22 +1176,27 @@ internal sealed class FakeAiProvider : ICloudAiProvider
     public NaturalLanguageOperationCandidate? NextCandidate { get; set; }
     public int CallCount { get; private set; }
     public Exception? NextException { get; set; }
+    public TaskCompletionSource<bool>? Started { get; set; }
+    public TaskCompletionSource<bool>? Release { get; set; }
 
     public decimal EstimateCostCny(AiProviderRequest request) =>
         EstimatedCostCny ?? 0.01m;
 
-    public ValueTask<AiProviderResult> CompleteAsync(
+    public async ValueTask<AiProviderResult> CompleteAsync(
         AiProviderRequest request, string credential, CancellationToken cancellationToken)
     {
         CallCount++;
         if (NextException is not null) throw NextException;
-        return ValueTask.FromResult(new AiProviderResult(
+        Started?.TrySetResult(true);
+        if (Release is not null)
+            await Release.Task.WaitAsync(cancellationToken);
+        return new AiProviderResult(
             true,
             request.Purpose == AiRequestPurpose.NaturalLanguageOperation
                 ? "candidate"
                 : "今天的重点已经整理好了。",
             NextUsage,
-            Candidate: NextCandidate));
+            Candidate: NextCandidate);
     }
 }
 

@@ -37,7 +37,7 @@ AI 不参与活动分类、偏离计时、提醒阈值、版本检查、冲突�
 - [DeepSeek Chat Completion API](https://api-docs.deepseek.com/api/create-chat-completion)
 - [DeepSeek 隐私政策](https://platform.deepseek.com/downloads/DeepSeek%20Privacy%20Policy.pdf)
 
-Jarvis 本机月度硬上限固定为 30 元，15 元和 24 元显示预警；单次估算超过 1 元必须再次确认。达到上限后不自动充值、不自动切换供应商。
+Jarvis 本机月度硬上限默认为 30 元，15 元和 24 元显示预警；单次估算超过 1 元必须再次确认。达到上限后不自动充值、不自动切换供应商；只有用户在 Desktop 明确确认提高硬上限后才恢复请求。Provider、模型、费用、凭据末四位和云端请求处理中状态均可见。
 
 ## 自动验证
 
@@ -50,6 +50,15 @@ Jarvis 本机月度硬上限固定为 30 元，15 元和 24 元显示预警；�
 ```
 
 高层场景使用真实临时 SQLite 和可控时钟，不使用 `sleep` 冒充阈值；真实双进程 smoke 继续覆盖 Core→Desktop、同库重启、单实例、bundled runtime 转发和精确清理。
+
+### Issue 验收映射
+
+- T15：`Mobile_escalation_starts_at_twenty_minutes_replaces_old_card_and_stops_at_three`、`Recovery_cancels_the_old_card_and_a_new_deviation_restarts_at_sequence_one`、卡片隐私/四动作与投递重试场景。
+- T16：`Planned_or_early_end_enters_review_and_raw_text_survives_restart`，并由 Core 的立即、30/60 分钟稍后和明确跳过状态迁移覆盖三种选择。
+- T17：默认 23:00、在线单次邀请、工作中顺延、离线待补、30 分钟仅追问一次、逐问与 1–3 项次日调整分别有独立场景。
+- T18：`Cycle_review_uses_traceable_aggregates_and_keeps_one_to_three_confirmed_focuses` 与休息分钟追溯场景覆盖周期边界、事实来源和 1–3 个重点。
+- T19：凭据、最小数据库披露、价格/预算预留、单次费用确认、15/24 元预警、默认 30 元硬上限、用户明确提高后恢复以及云端请求进行中状态均有场景。
+- T20：Desktop/飞书候选确认、模板候选、歧义追问、取消/推迟与无 AI 确定性降级、重复事件/候选绑定和中断防重复收费均有场景。
 
 ## 明确后置
 

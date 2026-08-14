@@ -1340,6 +1340,29 @@ public partial class MainWindow : Window
     private async void DeleteAiCredentialButton_Click(object sender, RoutedEventArgs eventArgs) =>
         await SendCompanionAsync(new DeleteAiCredentialCommand());
 
+    private async void SetAiMonthlyHardCapButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!decimal.TryParse(
+                AiHardCapBox.Text, NumberStyles.Number, CultureInfo.CurrentCulture, out var hardCap) &&
+            !decimal.TryParse(
+                AiHardCapBox.Text, NumberStyles.Number, CultureInfo.InvariantCulture, out hardCap))
+        {
+            SetOperationStatus("请输入有效的 AI 月度硬上限。", isError: true);
+            return;
+        }
+        var current = _companionSnapshot?.Ai.MonthlyHardCapCny ?? 30m;
+        if (hardCap > current)
+        {
+            var confirmation = MessageBox.Show(
+                $"确认把 AI 月度费用硬上限从 {current:F2} 元提高到 {hardCap:F2} 元吗？",
+                "明确提高 AI 费用上限",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (confirmation != MessageBoxResult.Yes) return;
+        }
+        await SendCompanionAsync(new SetAiMonthlyHardCapCommand(hardCap));
+    }
+
     private async void SendAiChatButton_Click(object sender, RoutedEventArgs eventArgs)
     {
         var command = new RequestAiChatCommand(AiChatBox.Text);
@@ -1570,6 +1593,8 @@ public partial class MainWindow : Window
         AiStatusText.Text = ai.Enabled
             ? $"{ai.Provider} · {ai.Model} · Key …{ai.CredentialLastFour} · 本月 ¥{ai.MonthSpendCny:F4}/¥{ai.MonthlyHardCapCny:F0}"
             : $"{ai.Provider} · {ai.Model} · 未配置（表单、模板和监督仍可用）";
+        AiHardCapBox.Text = ai.MonthlyHardCapCny.ToString("0.##", CultureInfo.CurrentCulture);
+        if (ai.IsRequestInProgress) AiStatusText.Text += " · 云端请求处理中";
         if (ai.Alert24Reached) AiStatusText.Text += " · 已达到 ¥24 预警";
         else if (ai.Alert15Reached) AiStatusText.Text += " · 已达到 ¥15 预警";
         if (!string.IsNullOrWhiteSpace(ai.LastError)) AiStatusText.Text += $" · 最近错误：{ai.LastError}";

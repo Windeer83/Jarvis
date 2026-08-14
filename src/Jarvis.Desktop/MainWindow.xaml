@@ -323,6 +323,10 @@
                                             Click="SaveAiCredentialButton_Click" />
                                     <Button Content="删除本机凭据" Padding="10,5" Margin="8,0,0,0"
                                             Click="DeleteAiCredentialButton_Click" />
+                                    <TextBlock Text="月度硬上限（元）" VerticalAlignment="Center" Margin="16,0,5,0" />
+                                    <TextBox x:Name="AiHardCapBox" Width="72" Text="30" Padding="5" />
+                                    <Button Content="设置上限" Padding="10,5" Margin="8,0,0,0"
+                                            Click="SetAiMonthlyHardCapButton_Click" />
                                 </WrapPanel>
                                 <TextBlock x:Name="AiStatusText" Text="AI 未配置" Foreground="#4A5568" />
                                 <TextBlock Text="发送时，当前输入与完成该候选所需的最小承诺投影会发往 DeepSeek 云端；不会发送屏幕、按键、聊天历史或完整监督数据库。"

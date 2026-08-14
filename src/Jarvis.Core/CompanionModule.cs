@@ -10,7 +10,6 @@ internal sealed class CompanionModule : IAsyncDisposable
     private const string ProviderName = "DeepSeek";
     private const string ModelName = "deepseek-v4-flash";
     private const string PriceVersion = "2026-04-24";
-    private const decimal MonthlyHardCapCny = 30m;
     private readonly SqliteCompanionStore _store;
     private readonly SupervisionModule _supervision;
     private readonly IClock _clock;
@@ -21,6 +20,7 @@ internal sealed class CompanionModule : IAsyncDisposable
     private bool _listenerReady;
     private string? _worktimeError;
     private string? _aiError;
+    private volatile bool _aiRequestInProgress;
     private DateOnly? _dailyReviewDeferredDate;
     private bool _disposed;
 
@@ -120,6 +120,7 @@ internal sealed class CompanionModule : IAsyncDisposable
                 ConfirmCycleFocusesCommand value => await ConfirmCycleFocusesAsync(value, cancellationToken),
                 SaveAiCredentialCommand value => await SaveAiCredentialAsync(value, cancellationToken),
                 DeleteAiCredentialCommand => await DeleteAiCredentialAsync(cancellationToken),
+                SetAiMonthlyHardCapCommand value => await SetAiMonthlyHardCapAsync(value, cancellationToken),
                 RequestAiChatCommand value => await RequestAiChatAsync(value, cancellationToken),
                 InterpretNaturalLanguageCommand value => await InterpretNaturalLanguageAsync(value, cancellationToken),
                 ConfirmNaturalLanguageCandidateCommand value =>
@@ -190,6 +191,7 @@ internal sealed class CompanionModule : IAsyncDisposable
             .ConfigureAwait(false);
         var lastFour = string.IsNullOrEmpty(currentCredential) ? null : currentCredential[^Math.Min(4, currentCredential.Length)..];
         var spend = await _store.ReadMonthSpendAsync(_clock.Now, cancellationToken).ConfigureAwait(false);
+        var hardCap = await _store.ReadAiMonthlyHardCapAsync(cancellationToken).ConfigureAwait(false);
         var dailyReview = await _store.ReadDailyReviewAsync(cancellationToken).ConfigureAwait(false);
         var factsDate = dailyReview.ReviewDate ?? DateOnly.FromDateTime(_clock.Now.ToLocalTime().DateTime);
         dailyReview = dailyReview with
@@ -208,8 +210,8 @@ internal sealed class CompanionModule : IAsyncDisposable
             dailyReview,
             await _store.ReadCycleReviewAsync(cancellationToken).ConfigureAwait(false),
             new AiStatusView(
-                lastFour is not null, ProviderName, ModelName, lastFour, spend, MonthlyHardCapCny,
-                spend >= 15m, spend >= 24m, _aiError),
+                lastFour is not null, ProviderName, ModelName, lastFour, spend, hardCap,
+                spend >= 15m, spend >= 24m, _aiError, _aiRequestInProgress),
             await _store.ReadRecentAiUsageAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadRecentChatAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadPendingCandidateAsync(cancellationToken).ConfigureAwait(false));
@@ -1098,6 +1100,18 @@ internal sealed class CompanionModule : IAsyncDisposable
             await SnapshotAsync(cancellationToken));
     }
 
+    private async Task<CompanionOutcome> SetAiMonthlyHardCapAsync(
+        SetAiMonthlyHardCapCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (command.HardCapCny is < 1m or > 10_000m)
+            return Fail("ai_monthly_cap_invalid", "AI 月度硬上限必须在 1 元到 10000 元之间。");
+        var hardCap = decimal.Round(command.HardCapCny, 2, MidpointRounding.AwayFromZero);
+        await _store.SaveAiMonthlyHardCapAsync(hardCap, cancellationToken).ConfigureAwait(false);
+        return Ok($"AI 月度硬上限已由用户明确设置为 {hardCap:F2} 元。",
+            await SnapshotAsync(cancellationToken));
+    }
+
     private async Task<CompanionOutcome> RequestAiChatAsync(
         RequestAiChatCommand command,
         CancellationToken cancellationToken)
@@ -1469,16 +1483,17 @@ internal sealed class CompanionModule : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(credential))
             return (Fail("ai_credential_missing", "AI 未配置；表单、按钮和模板仍可正常使用。"), null);
         var spend = await _store.ReadMonthSpendAsync(_clock.Now, cancellationToken).ConfigureAwait(false);
-        if (spend >= MonthlyHardCapCny)
-            return (Fail("ai_monthly_cap_reached", "本月 AI 费用已到 30 元硬上限；确定性监督继续运行。"), null);
+        var hardCap = await _store.ReadAiMonthlyHardCapAsync(cancellationToken).ConfigureAwait(false);
+        if (spend >= hardCap)
+            return (Fail("ai_monthly_cap_reached", $"本月 AI 费用已到 {hardCap:F2} 元硬上限；确定性监督继续运行。"), null);
         var aiRequest = new AiProviderRequest(
             purpose, text, ModelName, maxOutputTokens, _clock.Now,
             await _supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false));
         var estimate = _aiProvider.EstimateCostCny(aiRequest);
         if (estimate > 1m && !approvedOverOneCny)
             return (Fail("ai_cost_confirmation_required", $"本次预计约 {estimate:F2} 元，需要明确确认后再调用。"), null);
-        if (spend + estimate > MonthlyHardCapCny)
-            return (Fail("ai_monthly_cap_would_exceed", "本次调用预计会超过 30 元月度硬上限。"), null);
+        if (spend + estimate > hardCap)
+            return (Fail("ai_monthly_cap_would_exceed", $"本次调用预计会超过 {hardCap:F2} 元月度硬上限。"), null);
 
         var reservation = new AiRequestRecordView(
             requestId, _clock.Now, purpose, ProviderName, ModelName,
@@ -1494,6 +1509,7 @@ internal sealed class CompanionModule : IAsyncDisposable
         }
 
         AiProviderResult providerResult;
+        _aiRequestInProgress = true;
         try
         {
             providerResult = await _aiProvider.CompleteAsync(
@@ -1503,6 +1519,10 @@ internal sealed class CompanionModule : IAsyncDisposable
         {
             _aiError = exception.Message;
             return (Fail("ai_provider_unavailable", "云端 AI 暂时不可用；确定性监督和手工操作不受影响。"), null);
+        }
+        finally
+        {
+            _aiRequestInProgress = false;
         }
 
         var cost = CalculateCost(providerResult.Usage);

@@ -208,7 +208,8 @@ public sealed record AiStatusView(
     decimal MonthlyHardCapCny,
     bool Alert15Reached,
     bool Alert24Reached,
-    string? LastError);
+    string? LastError,
+    bool IsRequestInProgress = false);
 
 public sealed record AiRequestRecordView(
     Guid RequestId,
@@ -290,6 +291,7 @@ public sealed record CompanionSnapshot(
 [JsonDerivedType(typeof(ConfirmCycleFocusesCommand), "confirmCycleFocuses")]
 [JsonDerivedType(typeof(SaveAiCredentialCommand), "saveAiCredential")]
 [JsonDerivedType(typeof(DeleteAiCredentialCommand), "deleteAiCredential")]
+[JsonDerivedType(typeof(SetAiMonthlyHardCapCommand), "setAiMonthlyHardCap")]
 [JsonDerivedType(typeof(RequestAiChatCommand), "requestAiChat")]
 [JsonDerivedType(typeof(InterpretNaturalLanguageCommand), "interpretNaturalLanguage")]
 [JsonDerivedType(typeof(ConfirmNaturalLanguageCandidateCommand), "confirmNaturalLanguageCandidate")]
@@ -369,6 +371,8 @@ public sealed record ConfirmCycleFocusesCommand(IReadOnlyList<string> Focuses) :
 public sealed record SaveAiCredentialCommand(string Credential) : CompanionCommand;
 
 public sealed record DeleteAiCredentialCommand : CompanionCommand;
+
+public sealed record SetAiMonthlyHardCapCommand(decimal HardCapCny) : CompanionCommand;
 
 public sealed record RequestAiChatCommand(
     string Text,

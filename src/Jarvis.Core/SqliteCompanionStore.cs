@@ -69,6 +69,18 @@ internal sealed class SqliteCompanionStore
     public Task DeleteSettingForModuleAsync(string key, CancellationToken cancellationToken) =>
         ExecuteAsync("DELETE FROM companion_settings WHERE key=$key;", cancellationToken, ("$key", key));
 
+    public async Task<decimal> ReadAiMonthlyHardCapAsync(CancellationToken cancellationToken)
+    {
+        var value = await ReadSettingAsync("ai-monthly-hard-cap", cancellationToken).ConfigureAwait(false);
+        return decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var hardCap)
+            ? hardCap
+            : 30m;
+    }
+
+    public Task SaveAiMonthlyHardCapAsync(decimal hardCap, CancellationToken cancellationToken) =>
+        WriteSettingAsync(
+            "ai-monthly-hard-cap", hardCap.ToString(CultureInfo.InvariantCulture), cancellationToken);
+
     public async Task<StoredWorktimeCandidateBinding?> ReadWorktimeCandidateBindingAsync(
         string eventId,
         CancellationToken cancellationToken)
