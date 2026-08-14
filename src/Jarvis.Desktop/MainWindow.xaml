@@ -296,6 +296,137 @@
                     </StackPanel>
                 </Border>
 
+                <GroupBox Header="手机闭环、复盘与 AI（T15–T20）" Padding="10" Margin="0,0,0,14">
+                    <TabControl>
+                        <TabItem Header="自然语言 / AI">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="直接描述你想安排或修改的工作。AI 只生成候选卡，确认前不会执行。"
+                                           Foreground="#4A5568" Margin="0,0,0,8" />
+                                <TextBox x:Name="NaturalLanguageBox" MinHeight="64" TextWrapping="Wrap"
+                                         AcceptsReturn="True" Padding="8"
+                                         ToolTip="例如：明天下午三点监督我写报告一小时，只允许 Word。" />
+                                <WrapPanel Margin="0,8,0,8">
+                                    <Button Content="生成候选操作" Padding="14,6" Margin="0,0,8,0"
+                                            Click="InterpretNaturalLanguageButton_Click" />
+                                    <Button Content="确认候选" Padding="14,6" Margin="0,0,8,0"
+                                            Click="ConfirmNaturalLanguageCandidateButton_Click" />
+                                    <Button Content="放弃候选" Padding="14,6"
+                                            Click="DiscardNaturalLanguageCandidateButton_Click" />
+                                </WrapPanel>
+                                <TextBlock x:Name="NaturalLanguageCandidateText" Text="当前没有候选操作。"
+                                           TextWrapping="Wrap" Margin="0,0,0,12" />
+                                <Separator />
+                                <WrapPanel Margin="0,10,0,6">
+                                    <TextBlock Text="DeepSeek API Key" VerticalAlignment="Center" />
+                                    <PasswordBox x:Name="AiCredentialBox" Width="300" Margin="8,0" Padding="6" />
+                                    <Button Content="保存到 Windows 凭据管理器" Padding="10,5"
+                                            Click="SaveAiCredentialButton_Click" />
+                                    <Button Content="删除本机凭据" Padding="10,5" Margin="8,0,0,0"
+                                            Click="DeleteAiCredentialButton_Click" />
+                                </WrapPanel>
+                                <TextBlock x:Name="AiStatusText" Text="AI 未配置" Foreground="#4A5568" />
+                                <TextBlock Text="发送时，当前输入与完成该候选所需的最小承诺投影会发往 DeepSeek 云端；不会发送屏幕、按键、聊天历史或完整监督数据库。"
+                                           Foreground="#7A4E00" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                <TextBox x:Name="AiChatBox" MinHeight="52" TextWrapping="Wrap" AcceptsReturn="True"
+                                         Margin="0,8,0,6" Padding="8" />
+                                <Button Content="发送基础对话" Width="120" Padding="10,5"
+                                        Click="SendAiChatButton_Click" />
+                                <TextBlock x:Name="AiChatResultText" Margin="0,8,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem Header="飞书手机闭环">
+                            <StackPanel Margin="10">
+                                <WrapPanel>
+                                    <CheckBox x:Name="WorktimeEnabledBox" Content="启用" VerticalAlignment="Center" />
+                                    <TextBlock Text="lark-cli" VerticalAlignment="Center" Margin="12,0,5,0" />
+                                    <TextBox x:Name="LarkCliPathBox" Width="330" Text="lark-cli" Padding="5" />
+                                    <TextBlock Text="profile" VerticalAlignment="Center" Margin="12,0,5,0" />
+                                    <TextBox x:Name="LarkProfileBox" Width="120" Text="jarvis-t04" Padding="5" />
+                                    <CheckBox x:Name="DetailedPreviewBox" Content="通知显示详细摘要" Margin="12,0,0,0"
+                                              VerticalAlignment="Center" />
+                                    <Button Content="保存并启动" Margin="10,0,0,0" Padding="10,5"
+                                            Click="ConfigureWorktimeButton_Click" />
+                                </WrapPanel>
+                                <TextBlock Text="默认隐私预览只提示解锁查看；可选详细摘要仍不会显示软件、域名、文件名或正文。启用后，在飞书私聊机器人发送“绑定 Jarvis”。"
+                                           Margin="0,10,0,6" TextWrapping="Wrap" Foreground="#4A5568" />
+                                <TextBlock x:Name="WorktimeStatusText" Text="飞书通道未启用" />
+                                <DataGrid x:Name="MobileCardGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                          Height="210" Margin="0,10,0,0">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="#" Binding="{Binding Sequence}" Width="40" />
+                                        <DataGridTextColumn Header="发送时间" Binding="{Binding SentAt.LocalDateTime, StringFormat={}{0:MM-dd HH:mm}}" Width="130" />
+                                        <DataGridTextColumn Header="承诺" Binding="{Binding CommitmentSummary}" Width="*" />
+                                        <DataGridTextColumn Header="分类" Binding="{Binding Classification}" Width="90" />
+                                        <DataGridTextColumn Header="状态" Binding="{Binding State}" Width="100" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem Header="承诺 / 每日复盘">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="承诺到点只停止监督并进入待回顾，不会自动标记完成。" Foreground="#4A5568" />
+                                <WrapPanel Margin="0,8,0,6">
+                                    <Button Content="提前结束所选承诺" Padding="10,5" Margin="0,0,8,0"
+                                            Click="EndSelectedCommitmentButton_Click" />
+                                    <TextBox x:Name="CommitmentChangeReasonBox" Width="180" Padding="6" Margin="0,0,8,0"
+                                             ToolTip="取消或推迟原因（必填）" />
+                                    <Button Content="取消所选承诺" Padding="10,5" Margin="0,0,8,0"
+                                            Click="CancelSelectedCommitmentButton_Click" />
+                                    <TextBox x:Name="CommitmentDeferStartBox" Width="135" Padding="6" Margin="0,0,8,0"
+                                             ToolTip="推迟到：yyyy-MM-dd HH:mm" />
+                                    <Button Content="按剩余时长推迟" Padding="10,5" Margin="0,0,8,0"
+                                            Click="DeferSelectedCommitmentButton_Click" />
+                                    <ComboBox x:Name="CompletionAssessmentBox" Width="120" Margin="0,0,8,0" />
+                                    <TextBox x:Name="CommitmentReviewTextBox" Width="420" Padding="6"
+                                             ToolTip="保留原始回顾文字" />
+                                    <Button Content="提交回顾" Padding="10,5" Margin="8,0,0,0"
+                                            Click="SubmitCommitmentReviewButton_Click" />
+                                    <Button Content="30 分钟后回顾" Padding="10,5" Margin="8,0,0,0"
+                                            Click="DeferCommitmentReviewButton_Click" />
+                                    <Button Content="跳过回顾" Padding="10,5" Margin="8,0,0,0"
+                                            Click="SkipCommitmentReviewButton_Click" />
+                                </WrapPanel>
+                                <ListBox x:Name="CommitmentReviewList" Height="90" />
+                                <Separator Margin="0,10" />
+                                <WrapPanel>
+                                    <TextBlock Text="每天" VerticalAlignment="Center" />
+                                    <TextBox x:Name="DailyReviewTimeBox" Width="70" Text="23:00" Margin="6,0" Padding="5" />
+                                    <Button Content="保存时间" Padding="9,5" Click="ConfigureDailyReviewButton_Click" />
+                                    <Button Content="现在开始" Padding="9,5" Margin="8,0,0,0" Click="StartDailyReviewButton_Click" />
+                                    <Button Content="30 分钟后" Padding="9,5" Margin="8,0,0,0" Click="SnoozeDailyReviewButton_Click" />
+                                    <Button Content="60 分钟后" Padding="9,5" Margin="8,0,0,0" Click="SnoozeDailyReviewSixtyButton_Click" />
+                                    <Button Content="跳过" Padding="9,5" Margin="8,0,0,0" Click="SkipDailyReviewButton_Click" />
+                                </WrapPanel>
+                                <TextBlock x:Name="DailyReviewQuestionText" Margin="0,8,0,5" Text="每日复盘未到时间。" />
+                                <WrapPanel>
+                                    <TextBox x:Name="DailyReviewAnswerBox" Width="700" Padding="6" />
+                                    <Button Content="回答并进入下一问" Padding="10,5" Margin="8,0,0,0"
+                                            Click="AnswerDailyReviewButton_Click" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem Header="周期复盘">
+                            <StackPanel Margin="10">
+                                <WrapPanel>
+                                    <TextBlock Text="周期天数" VerticalAlignment="Center" />
+                                    <TextBox x:Name="CycleIntervalBox" Width="55" Text="14" Margin="6,0" Padding="5" />
+                                    <TextBlock Text="时间" VerticalAlignment="Center" />
+                                    <TextBox x:Name="CycleReviewTimeBox" Width="70" Text="20:00" Margin="6,0" Padding="5" />
+                                    <Button Content="保存未来边界" Padding="10,5" Click="ConfigureCycleReviewButton_Click" />
+                                    <Button Content="开始待处理周期复盘" Padding="10,5" Margin="8,0,0,0"
+                                            Click="StartCycleReviewButton_Click" />
+                                </WrapPanel>
+                                <TextBlock x:Name="CycleReviewSummaryText" Margin="0,10,0,8" TextWrapping="Wrap"
+                                           Text="周期复盘尚未到期。" />
+                                <TextBlock Text="确认 1–3 个下周期重点（每行一个）" />
+                                <TextBox x:Name="CycleFocusesBox" Height="85" AcceptsReturn="True" Padding="7" />
+                                <Button Content="确认重点" Width="100" Padding="10,5" Margin="0,8,0,0"
+                                        Click="ConfirmCycleFocusesButton_Click" />
+                            </StackPanel>
+                        </TabItem>
+                    </TabControl>
+                </GroupBox>
+
                 <GroupBox Header="重复计划与发生项" Padding="10" Margin="0,0,0,14">
                     <StackPanel>
                         <WrapPanel Margin="0,0,0,8">

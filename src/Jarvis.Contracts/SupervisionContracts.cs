@@ -443,7 +443,8 @@ public sealed record CoreRequest(
     CommitmentRevisionDraft? RevisionDraft = null,
     int? ExpectedVersion = null,
     CommitmentTarget? ActivityTarget = null,
-    DateTimeOffset? ActivityStateStartedAt = null);
+    DateTimeOffset? ActivityStateStartedAt = null,
+    CompanionCommand? Companion = null);
 
 public sealed record CoreResponse(
     bool Success,
@@ -456,7 +457,8 @@ public sealed record CoreResponse(
     RecurrencePlanView? RecurrencePlan = null,
     RecurrenceChangeCard? RecurrenceChangeCard = null,
     CommitmentRevisionCard? CommitmentRevisionCard = null,
-    CommitmentHistoryView? CommitmentHistory = null);
+    CommitmentHistoryView? CommitmentHistory = null,
+    CompanionOutcome? CompanionOutcome = null);
 
 public static class CoreProtocol
 {
@@ -502,4 +504,5 @@ public static class CoreOperations
     public const string RespondToRestPrompt = "respondToRestPrompt";
     public const string StartTimedRest = "startTimedRest";
     public const string GetSnapshot = "getSnapshot";
+    public const string DispatchCompanion = "dispatchCompanion";
 }

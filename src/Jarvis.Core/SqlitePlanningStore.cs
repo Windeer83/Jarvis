@@ -470,6 +470,7 @@ internal sealed partial class SqliteCommitmentStore
                 command.CommandText = """
                     UPDATE commitments SET is_skipped=1
                     WHERE id=$id AND current_version=$version AND is_skipped=0
+                      AND ended_early_at_utc IS NULL
                       AND start_at_utc=$beforeStart AND end_at_utc=$beforeEnd;
                     """;
             }
@@ -479,6 +480,7 @@ internal sealed partial class SqliteCommitmentStore
                     UPDATE commitments SET start_at_utc=$start,end_at_utc=$end,
                         current_version=current_version+1
                     WHERE id=$id AND current_version=$version AND is_skipped=0
+                      AND ended_early_at_utc IS NULL
                       AND start_at_utc=$beforeStart AND end_at_utc=$beforeEnd;
                     """;
                 command.Parameters.AddWithValue("$start", FormatInstant(revised[index].StartAt));
@@ -819,7 +821,8 @@ internal sealed partial class SqliteCommitmentStore
             command.CommandText = """
                 SELECT c.id FROM commitments c
                 WHERE c.kind=$kind AND c.is_skipped=0
-                  AND c.start_at_utc < $end AND c.end_at_utc > $start;
+                  AND c.start_at_utc < $end
+                  AND COALESCE(c.ended_early_at_utc,c.end_at_utc) > $start;
                 """;
             command.Parameters.AddWithValue("$kind", (int)CommitmentKind.Computer);
             command.Parameters.AddWithValue("$start", FormatInstant(card.StartAt));

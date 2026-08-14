@@ -20,7 +20,8 @@ internal sealed record StoredCommitment(
     Guid? TemplateId,
     RestSettings RestSettings,
     bool IsSkipped,
-    int Version);
+    int Version,
+    DateTimeOffset? EndedEarlyAt = null);
 
 internal sealed record StoredSupervisionRuntime(
     Guid CommitmentId,
@@ -86,23 +87,161 @@ internal sealed partial class SqliteCommitmentStore
         var version = Convert.ToInt32(
             await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
-        if (version > 4)
+        if (version > 5)
         {
-            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 4。");
+            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 5。");
         }
 
-        if (version == 4)
+        if (version == 5)
         {
             return;
         }
 
         await using var migration = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
-        await MigrateToVersionThreeAsync(connection, migration, version, cancellationToken)
-            .ConfigureAwait(false);
-        await MigrateToVersionFourAsync(connection, migration, cancellationToken)
+        if (version < 4)
+        {
+            await MigrateToVersionThreeAsync(connection, migration, version, cancellationToken)
+                .ConfigureAwait(false);
+            await MigrateToVersionFourAsync(connection, migration, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        await MigrateToVersionFiveAsync(connection, migration, cancellationToken)
             .ConfigureAwait(false);
         await migration.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task MigrateToVersionFiveAsync(
+        SqliteConnection connection,
+        SqliteTransaction migration,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteSchemaAsync(connection, migration, """
+            ALTER TABLE commitments ADD COLUMN ended_early_at_utc TEXT NULL;
+            CREATE TABLE companion_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE mobile_escalation_cards (
+                card_id TEXT PRIMARY KEY,
+                commitment_id TEXT NOT NULL,
+                commitment_version INTEGER NOT NULL,
+                sequence INTEGER NOT NULL,
+                sent_at_utc TEXT NOT NULL,
+                planned_start_at_utc TEXT NOT NULL,
+                planned_end_at_utc TEXT NOT NULL,
+                deviation_started_at_utc TEXT NOT NULL,
+                classification INTEGER NOT NULL,
+                commitment_summary TEXT NOT NULL,
+                privacy_preview TEXT NOT NULL,
+                state INTEGER NOT NULL,
+                platform_message_id TEXT NULL,
+                default_rest_minutes INTEGER NOT NULL,
+                invalidation_result_text TEXT NULL,
+                UNIQUE (commitment_id, commitment_version, deviation_started_at_utc, sequence),
+                FOREIGN KEY (commitment_id) REFERENCES commitments(id) ON DELETE CASCADE
+            );
+            CREATE TABLE processed_worktime_events (
+                event_id TEXT PRIMARY KEY,
+                processed_at_utc TEXT NOT NULL,
+                state TEXT NOT NULL,
+                outcome_json TEXT NULL,
+                candidate_id TEXT NULL,
+                candidate_action TEXT NULL
+            );
+            CREATE TABLE processed_supervision_events (
+                event_id TEXT PRIMARY KEY,
+                processed_at_utc TEXT NOT NULL,
+                outcome_text TEXT NOT NULL
+            );
+            CREATE TABLE worktime_reply_outbox (
+                event_id TEXT PRIMARY KEY,
+                recipient_open_id TEXT NOT NULL,
+                reply_text TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                state TEXT NOT NULL,
+                platform_message_id TEXT NULL
+            );
+            CREATE TABLE commitment_reviews (
+                commitment_id TEXT PRIMARY KEY,
+                commitment_version INTEGER NOT NULL,
+                state INTEGER NOT NULL,
+                requested_at_utc TEXT NOT NULL,
+                deferred_until_utc TEXT NULL,
+                raw_text TEXT NULL,
+                assessment INTEGER NULL,
+                answered_at_utc TEXT NULL,
+                FOREIGN KEY (commitment_id) REFERENCES commitments(id) ON DELETE CASCADE
+            );
+            CREATE TABLE daily_review_sessions (
+                session_id TEXT PRIMARY KEY,
+                review_date TEXT NOT NULL UNIQUE,
+                state INTEGER NOT NULL,
+                current_question INTEGER NULL,
+                follow_up_used INTEGER NOT NULL DEFAULT 0,
+                mobile_invite_sent INTEGER NOT NULL DEFAULT 0,
+                snoozed_until_utc TEXT NULL,
+                created_at_utc TEXT NOT NULL
+            );
+            CREATE TABLE daily_review_answers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                question INTEGER NOT NULL,
+                raw_text TEXT NOT NULL,
+                answered_at_utc TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES daily_review_sessions(session_id) ON DELETE CASCADE
+            );
+            CREATE TABLE cycle_review_sessions (
+                session_id TEXT PRIMARY KEY,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                state INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                trends_json TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL
+            );
+            CREATE TABLE cycle_review_focuses (
+                session_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                PRIMARY KEY (session_id, ordinal),
+                FOREIGN KEY (session_id) REFERENCES cycle_review_sessions(session_id) ON DELETE CASCADE
+            );
+            CREATE TABLE ai_usage (
+                request_id TEXT PRIMARY KEY,
+                requested_at_utc TEXT NOT NULL,
+                purpose INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_hit_input_tokens INTEGER NOT NULL,
+                price_version TEXT NOT NULL,
+                cost_cny TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                error_code TEXT NULL,
+                state TEXT NOT NULL,
+                result_json TEXT NULL
+            );
+            CREATE TABLE companion_chat_messages (
+                message_id TEXT PRIMARY KEY,
+                at_utc TEXT NOT NULL,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL
+            );
+            CREATE TABLE natural_language_candidates (
+                candidate_id TEXT PRIMARY KEY,
+                kind INTEGER NOT NULL,
+                source INTEGER NOT NULL,
+                original_text TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL,
+                state TEXT NOT NULL
+            );
+            PRAGMA user_version = 5;
+            """, cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task MigrateToVersionFourAsync(
@@ -383,10 +522,12 @@ internal sealed partial class SqliteCommitmentStore
             await using var conflict = connection.CreateCommand();
             conflict.Transaction = transaction;
             conflict.CommandText = """
-                SELECT COALESCE(input_goal, outcome_goal), start_at_utc, end_at_utc
+                SELECT COALESCE(input_goal, outcome_goal), start_at_utc,
+                       COALESCE(ended_early_at_utc,end_at_utc)
                 FROM commitments
                 WHERE kind = $kind AND is_skipped = 0
-                  AND start_at_utc < $end AND end_at_utc > $start
+                  AND start_at_utc < $end
+                  AND COALESCE(ended_early_at_utc,end_at_utc) > $start
                 LIMIT 1;
                 """;
             conflict.Parameters.AddWithValue("$kind", (int)CommitmentKind.Computer);
@@ -585,7 +726,8 @@ internal sealed partial class SqliteCommitmentStore
                    c.confirmed_at_utc, c.start_reminder_sent_at_utc,
                    c.offline_manually_confirmed_at_utc, c.template_id,
                    c.idle_prompt_minutes, c.default_total_rest_minutes,
-                   c.sound_enabled, c.quiet_presentation, c.is_skipped, c.current_version, t.kind, t.value
+                   c.sound_enabled, c.quiet_presentation, c.is_skipped, c.current_version,
+                   t.kind, t.value, c.ended_early_at_utc
             FROM commitments c
             LEFT JOIN commitment_targets t ON t.commitment_id = c.id
             ORDER BY c.start_at_utc, c.id, t.ordinal;
@@ -633,7 +775,7 @@ internal sealed partial class SqliteCommitmentStore
         current.Transaction = transaction;
         current.CommandText = """
             SELECT current_version,is_skipped,confirmed_at_utc,start_reminder_sent_at_utc,
-                   offline_manually_confirmed_at_utc
+                   offline_manually_confirmed_at_utc,ended_early_at_utc
             FROM commitments WHERE id=$id;
             """;
         Add(current, "$id", revision.CommitmentId.ToString("D"));
@@ -648,7 +790,8 @@ internal sealed partial class SqliteCommitmentStore
         var confirmedAt = Parse(currentReader.GetString(2));
         var startReminderSentAt = NullableTime(currentReader, 3);
         var offlineManuallyConfirmedAt = NullableTime(currentReader, 4);
-        if (currentVersion != revision.FromVersion || isSkipped)
+        var endedEarlyAt = NullableTime(currentReader, 5);
+        if (currentVersion != revision.FromVersion || isSkipped || endedEarlyAt is not null)
         {
             return SupervisionResult<StoredCommitment>.Fail(
                 "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
@@ -670,7 +813,8 @@ internal sealed partial class SqliteCommitmentStore
             conflict.CommandText = """
                 SELECT 1 FROM commitments
                 WHERE id <> $id AND kind=$kind AND is_skipped=0
-                  AND start_at_utc < $end AND end_at_utc > $start LIMIT 1;
+                  AND start_at_utc < $end
+                  AND COALESCE(ended_early_at_utc,end_at_utc) > $start LIMIT 1;
                 """;
             Add(conflict, "$id", revision.CommitmentId.ToString("D"));
             Add(conflict, "$kind", (int)CommitmentKind.Computer);
@@ -695,6 +839,7 @@ internal sealed partial class SqliteCommitmentStore
                     idle_prompt_minutes=$idle,default_total_rest_minutes=$totalRest,
                     current_version=$version
                 WHERE id=$id AND current_version=$expected AND is_skipped=0
+                  AND ended_early_at_utc IS NULL
                   AND start_at_utc=$beforeStart AND end_at_utc=$beforeEnd;
                 """;
             Add(update, "$id", revision.CommitmentId.ToString("D"));
@@ -796,6 +941,134 @@ internal sealed partial class SqliteCommitmentStore
             IsSkipped: false,
             revision.ToVersion);
         return SupervisionResult<StoredCommitment>.Ok(updated);
+    }
+
+    public async Task<bool> EndEarlyAsync(
+        Guid commitmentId,
+        int expectedVersion,
+        DateTimeOffset endedAt,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE commitments
+            SET ended_early_at_utc = COALESCE(ended_early_at_utc, $ended)
+            WHERE id=$id AND current_version=$version AND is_skipped=0
+              AND start_at_utc <= $ended AND end_at_utc > $ended;
+            """;
+        Add(command, "$ended", Format(endedAt));
+        Add(command, "$id", commitmentId.ToString("D"));
+        Add(command, "$version", expectedVersion);
+        var changed = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        if (changed)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return changed;
+    }
+
+    public async Task<bool> CancelCommitmentAsync(
+        Guid commitmentId,
+        int expectedVersion,
+        DateTimeOffset cancelledAt,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                UPDATE commitments SET is_skipped=1
+                 WHERE id=$id AND current_version=$version AND is_skipped=0
+                   AND ended_early_at_utc IS NULL AND end_at_utc>$now;
+                """;
+            Add(command, "$id", commitmentId.ToString("D"));
+            Add(command, "$version", expectedVersion);
+            Add(command, "$now", Format(cancelledAt));
+            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                return false;
+        }
+        await using (var response = connection.CreateCommand())
+        {
+            response.Transaction = transaction;
+            ConfigureResponseInsert(
+                response, commitmentId, expectedVersion, "commitment_cancelled", cancelledAt, reason);
+            await response.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    public async Task<SupervisionResult<StoredCommitment>> DeferCommitmentAsync(
+        StoredCommitment current,
+        CommitmentCard deferred,
+        IReadOnlyList<ActivityRule> frozenRules,
+        DateTimeOffset deferredAt,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (deferred.Kind == CommitmentKind.Computer)
+        {
+            await using var conflict = connection.CreateCommand();
+            conflict.Transaction = transaction;
+            conflict.CommandText = """
+                SELECT 1 FROM commitments
+                 WHERE id<>$id AND kind=$kind AND is_skipped=0
+                   AND start_at_utc<$end AND COALESCE(ended_early_at_utc,end_at_utc)>$start
+                 LIMIT 1;
+                """;
+            Add(conflict, "$id", current.Id.ToString("D"));
+            Add(conflict, "$kind", (int)CommitmentKind.Computer);
+            Add(conflict, "$start", Format(deferred.StartAt));
+            Add(conflict, "$end", Format(deferred.EndAt));
+            if (await conflict.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null)
+                return SupervisionResult<StoredCommitment>.Fail(
+                    "computer_commitment_conflict", "推迟后的时段与另一条电脑型承诺冲突。");
+        }
+        await using (var endCurrent = connection.CreateCommand())
+        {
+            endCurrent.Transaction = transaction;
+            endCurrent.CommandText = """
+                UPDATE commitments SET ended_early_at_utc=$now
+                 WHERE id=$id AND current_version=$version AND is_skipped=0
+                   AND ended_early_at_utc IS NULL AND start_at_utc<=$now AND end_at_utc>$now;
+                """;
+            Add(endCurrent, "$now", Format(deferredAt));
+            Add(endCurrent, "$id", current.Id.ToString("D"));
+            Add(endCurrent, "$version", current.Version);
+            if (await endCurrent.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                return SupervisionResult<StoredCommitment>.Fail(
+                    "commitment_version_stale", "要推迟的承诺状态已经变化。");
+        }
+        var newId = Guid.NewGuid();
+        await InsertCommitmentAsync(
+            connection, transaction, newId, deferred, deferredAt, frozenRules, cancellationToken)
+            .ConfigureAwait(false);
+        await using (var response = connection.CreateCommand())
+        {
+            response.Transaction = transaction;
+            ConfigureResponseInsert(
+                response, current.Id, current.Version, "commitment_deferred", deferredAt,
+                $"{reason}\n新承诺：{newId:D}");
+            await response.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return SupervisionResult<StoredCommitment>.Ok(new StoredCommitment(
+            newId, deferred.Kind, deferred.StartAt, deferred.EndAt, deferred.InputGoal,
+            deferred.OutcomeGoal, deferred.RelatedAppsOrSites, deferred.SupervisionMode,
+            deferred.ReminderSettings, deferredAt, null, null, deferred.TemplateId,
+            deferred.RestSettings, false, 1));
     }
 
     public Task<CommitmentHistoryView?> ReadHistoryAsync(
@@ -1720,11 +1993,17 @@ internal sealed partial class SqliteCommitmentStore
         string kind,
         DateTimeOffset recordedAt,
         string? note,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? sourceEventId = null,
+        string? sourceEventOutcome = null)
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
+        if (!await TryClaimSupervisionEventAsync(
+                connection, transaction, sourceEventId, sourceEventOutcome, recordedAt, cancellationToken)
+            .ConfigureAwait(false))
+            return true;
         if (!await AssertCurrentVersionAsync(
                 connection, transaction, state.CommitmentId, commitmentVersion, cancellationToken)
             .ConfigureAwait(false))
@@ -1775,11 +2054,18 @@ internal sealed partial class SqliteCommitmentStore
         PendingActivitySegment? pendingSegment,
         StoredSupervisionRuntime state,
         ReminderNotice? notice,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? sourceEventId = null,
+        string? sourceEventOutcome = null)
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
+        if (!await TryClaimSupervisionEventAsync(
+                connection, transaction, sourceEventId, sourceEventOutcome, correction.CorrectedAt,
+                cancellationToken)
+            .ConfigureAwait(false))
+            return true;
         if (!await AssertCurrentVersionAsync(
                 connection, transaction, state.CommitmentId, expectedVersion, cancellationToken)
             .ConfigureAwait(false))
@@ -2134,11 +2420,33 @@ internal sealed partial class SqliteCommitmentStore
         command.Transaction = transaction;
         command.CommandText = """
             SELECT 1 FROM commitments
-            WHERE id=$id AND current_version=$version AND is_skipped=0;
+            WHERE id=$id AND current_version=$version AND is_skipped=0
+              AND ended_early_at_utc IS NULL;
             """;
         Add(command, "$id", commitmentId.ToString("D"));
         Add(command, "$version", expectedVersion);
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
+    }
+
+    private static async Task<bool> TryClaimSupervisionEventAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string? sourceEventId,
+        string? sourceEventOutcome,
+        DateTimeOffset processedAt,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(sourceEventId)) return true;
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO processed_supervision_events(event_id,processed_at_utc,outcome_text)
+            VALUES($id,$at,$outcome) ON CONFLICT(event_id) DO NOTHING;
+            """;
+        Add(command, "$id", sourceEventId);
+        Add(command, "$at", Format(processedAt));
+        Add(command, "$outcome", sourceEventOutcome ?? "操作已处理");
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
     }
 
     private static async Task ExecuteSchemaAsync(
@@ -2177,7 +2485,8 @@ internal sealed partial class SqliteCommitmentStore
             reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)),
             new RestSettings(reader.GetInt32(16), reader.GetInt32(17)),
             reader.GetInt32(20) != 0,
-            reader.GetInt32(21));
+            reader.GetInt32(21),
+            NullableTime(reader, 24));
 
     private static void Add(SqliteCommand command, string name, object? value) =>
         command.Parameters.AddWithValue(name, value ?? DBNull.Value);

@@ -7,8 +7,16 @@ namespace Jarvis.Core;
 
 internal sealed class CoreCommandHandler(
     SupervisionModule supervision,
+    CompanionModule? companion = null,
     Func<CancellationToken, Task<SupervisionSnapshot>>? projectionReader = null)
 {
+    public CoreCommandHandler(
+        SupervisionModule supervision,
+        Func<CancellationToken, Task<SupervisionSnapshot>> projectionReader)
+        : this(supervision, null, projectionReader)
+    {
+    }
+
     public async Task<CoreResponse> HandleAsync(
         CoreRequest request,
         CancellationToken cancellationToken)
@@ -276,7 +284,23 @@ internal sealed class CoreCommandHandler(
             case CoreOperations.GetSnapshot:
                 return new CoreResponse(
                     true,
-                    Snapshot: await supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false));
+                    Snapshot: await supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false),
+                    CompanionOutcome: companion is null
+                        ? null
+                        : new CompanionOutcome(
+                            true,
+                            Snapshot: await companion.SnapshotAsync(cancellationToken).ConfigureAwait(false)));
+
+            case CoreOperations.DispatchCompanion when request.Companion is not null && companion is not null:
+                {
+                    var outcome = await companion.DispatchAsync(request.Companion, cancellationToken)
+                        .ConfigureAwait(false);
+                    return new CoreResponse(
+                        outcome.Success,
+                        outcome.ErrorCode,
+                        outcome.Message,
+                        CompanionOutcome: outcome);
+                }
 
             default:
                 return Failure("invalid_request", "Core 无法识别这项操作或请求缺少必要内容。");

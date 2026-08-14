@@ -31,17 +31,28 @@ internal static class Program
         var clock = new SystemClock();
         var reminderHub = new LocalReminderHub();
         SupervisionModule? supervision = null;
+        CompanionModule? companion = null;
         try
         {
+            var databasePath = Path.Combine(dataDirectory, "jarvis.db");
             supervision = SupervisionModule.OpenAsync(
-                    Path.Combine(dataDirectory, "jarvis.db"),
+                    databasePath,
                     clock,
                     new WindowsActivitySource(clock),
                     reminderHub)
                 .GetAwaiter()
                 .GetResult();
+            companion = CompanionModule.OpenAsync(
+                    databasePath,
+                    supervision,
+                    clock,
+                    new LarkCliWorktimeChannel(),
+                    new DeepSeekCloudAiProvider(),
+                    new WindowsAiCredentialStore())
+                .GetAwaiter()
+                .GetResult();
 
-            using var context = new CoreApplicationContext(supervision, desktopPath);
+            using var context = new CoreApplicationContext(supervision, companion, desktopPath);
             System.Windows.Forms.Application.Run(context);
         }
         catch (Exception exception)
@@ -54,6 +65,7 @@ internal static class Program
         }
         finally
         {
+            companion?.DisposeAsync().AsTask().GetAwaiter().GetResult();
             supervision?.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
     }

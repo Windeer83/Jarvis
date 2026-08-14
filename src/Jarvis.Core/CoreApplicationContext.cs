@@ -6,6 +6,7 @@ namespace Jarvis.Core;
 internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationContext
 {
     private readonly SupervisionModule _supervision;
+    private readonly CompanionModule _companion;
     private readonly CorePipeServer _pipeServer;
     private readonly NotifyIcon _trayIcon;
     private readonly ToolStripMenuItem _statusItem;
@@ -14,9 +15,13 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
     private bool _tickRunning;
     private bool _disposed;
 
-    public CoreApplicationContext(SupervisionModule supervision, string? configuredDesktopPath)
+    public CoreApplicationContext(
+        SupervisionModule supervision,
+        CompanionModule companion,
+        string? configuredDesktopPath)
     {
         _supervision = supervision;
+        _companion = companion;
         _configuredDesktopPath = configuredDesktopPath;
 
         _statusItem = new ToolStripMenuItem("正在读取 Core 状态…") { Enabled = false };
@@ -42,7 +47,7 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
 
         _pipeServer = new CorePipeServer(
             CoreProtocol.PipeName,
-            new CoreCommandHandler(_supervision));
+            new CoreCommandHandler(_supervision, _companion));
         _pipeServer.Start();
 
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -79,6 +84,7 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
         try
         {
             await _supervision.TickAsync();
+            await _companion.AdvanceAsync();
             await RefreshProjectionAsync();
         }
         catch (Exception exception)

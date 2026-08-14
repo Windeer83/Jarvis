@@ -82,7 +82,7 @@ public sealed class SqliteMigrationScenarios
         await connection.OpenAsync();
         await using var version = connection.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
-        Assert.Equal(4L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal(5L, (long)(await version.ExecuteScalarAsync())!);
         await using var planningTables = connection.CreateCommand();
         planningTables.CommandText = """
             SELECT count(*)
@@ -128,7 +128,7 @@ public sealed class SqliteMigrationScenarios
             await AssertVersionThreeDataWasBackfilledAsync(module);
         }
 
-        await AssertUserVersionAsync(database.Path, 4);
+        await AssertUserVersionAsync(database.Path, 5);
 
         await using (var reopened = await SupervisionModule.OpenAsync(
                          database.Path, clock, new FakeActivitySource(), new FakeReminderSink()))
@@ -136,7 +136,7 @@ public sealed class SqliteMigrationScenarios
             await AssertVersionThreeDataWasBackfilledAsync(reopened);
         }
 
-        await AssertUserVersionAsync(database.Path, 4);
+        await AssertUserVersionAsync(database.Path, 5);
     }
 
     [Fact]
@@ -183,6 +183,45 @@ public sealed class SqliteMigrationScenarios
             WHERE type = 'table' AND name = 'supervision_responses';
             """;
         Assert.Equal(1L, (long)(await deliberateConflict.ExecuteScalarAsync())!);
+    }
+
+    [Fact]
+    public async Task Failed_version_five_migration_rolls_back_all_companion_schema_and_user_version()
+    {
+        using var database = new TemporaryDatabase();
+        await CreateVersionThreeDatabaseAsync(database.Path);
+        await using (var connection = new SqliteConnection($"Data Source={database.Path};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using var migration = (SqliteTransaction)await connection.BeginTransactionAsync();
+            await SqliteCommitmentStore.MigrateToVersionFourAsync(
+                connection, migration, CancellationToken.None);
+            await migration.CommitAsync();
+            await using var conflict = connection.CreateCommand();
+            conflict.CommandText = "CREATE TABLE companion_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);";
+            await conflict.ExecuteNonQueryAsync();
+        }
+
+        await using var reopened = new SqliteConnection($"Data Source={database.Path};Pooling=False");
+        await reopened.OpenAsync();
+        await using var failedMigration = (SqliteTransaction)await reopened.BeginTransactionAsync();
+        await Assert.ThrowsAsync<SqliteException>(() => SqliteCommitmentStore.MigrateToVersionFiveAsync(
+            reopened, failedMigration, CancellationToken.None));
+        await failedMigration.RollbackAsync();
+
+        await using var version = reopened.CreateCommand();
+        version.CommandText = "PRAGMA user_version;";
+        Assert.Equal(4L, (long)(await version.ExecuteScalarAsync())!);
+        await using var columns = reopened.CreateCommand();
+        columns.CommandText = "SELECT count(*) FROM pragma_table_info('commitments') WHERE name='ended_early_at_utc';";
+        Assert.Equal(0L, (long)(await columns.ExecuteScalarAsync())!);
+        await using var tables = reopened.CreateCommand();
+        tables.CommandText = """
+            SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN (
+                'mobile_escalation_cards','commitment_reviews','daily_review_sessions',
+                'cycle_review_sessions','ai_usage','natural_language_candidates');
+            """;
+        Assert.Equal(0L, (long)(await tables.ExecuteScalarAsync())!);
     }
 
     private static async Task CreateVersionOneDatabaseAsync(

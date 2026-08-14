@@ -680,7 +680,9 @@ public sealed class SupervisionModule : IAsyncDisposable
     public async Task<SupervisionResult<ActiveSupervisionView>> RecordReturnIntentAsync(
         Guid commitmentId,
         int expectedVersion,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? sourceEventId = null,
+        string? sourceEventOutcome = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -701,7 +703,8 @@ public sealed class SupervisionModule : IAsyncDisposable
             var state = await _store.ReadRuntimeAsync(commitmentId, cancellationToken).ConfigureAwait(false);
             state = state with { ReturnIntentAt = _clock.Now };
             if (!await _store.PersistRuntimeAndResponseAsync(
-                    state, expectedVersion, "return_intent", _clock.Now, null, cancellationToken)
+                    state, expectedVersion, "return_intent", _clock.Now, null, cancellationToken,
+                    sourceEventId, sourceEventOutcome)
                 .ConfigureAwait(false))
             {
                 return SupervisionResult<ActiveSupervisionView>.Fail(
@@ -722,7 +725,7 @@ public sealed class SupervisionModule : IAsyncDisposable
         ActivityRuleScope scope,
         string? note = null,
         CancellationToken cancellationToken = default) => ClassifyActivityWithinGateAsync(
-            commitmentId, null, null, null, classification, scope, note, cancellationToken);
+            commitmentId, null, null, null, classification, scope, note, cancellationToken, null, null);
 
     private async Task<SupervisionResult<ActiveSupervisionView>> ClassifyActivityWithinGateAsync(
         Guid commitmentId,
@@ -732,7 +735,9 @@ public sealed class SupervisionModule : IAsyncDisposable
         ActivityClassification classification,
         ActivityRuleScope scope,
         string? note,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? sourceEventId,
+        string? sourceEventOutcome)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (classification is not (ActivityClassification.Related or ActivityClassification.Distracting))
@@ -849,7 +854,7 @@ public sealed class SupervisionModule : IAsyncDisposable
 
             if (!await _store.PersistClassificationAsync(
                     bindings, correction, commitment.Version, pendingSegment, state, reminder,
-                    cancellationToken).ConfigureAwait(false))
+                    cancellationToken, sourceEventId, sourceEventOutcome).ConfigureAwait(false))
             {
                 return SupervisionResult<ActiveSupervisionView>.Fail(
                     "commitment_version_stale", "工作承诺已经变化，请按当前版本重新操作。");
@@ -894,11 +899,14 @@ public sealed class SupervisionModule : IAsyncDisposable
         ActivityClassification classification,
         ActivityRuleScope scope,
         string? note = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? sourceEventId = null,
+        string? sourceEventOutcome = null)
     {
         return await ClassifyActivityWithinGateAsync(
             commitmentId, expectedVersion, target, activityStateStartedAt,
-            classification, scope, note, cancellationToken).ConfigureAwait(false);
+            classification, scope, note, cancellationToken, sourceEventId, sourceEventOutcome)
+            .ConfigureAwait(false);
     }
 
     public async Task<SupervisionResult<TimedRestView>> RespondToRestPromptAsync(
@@ -975,7 +983,8 @@ public sealed class SupervisionModule : IAsyncDisposable
                 IdleStartedAt = null
             };
             if (!await _store.PersistRuntimeAndResponseAsync(
-                    state, expectedVersion, "rest_confirmed", _clock.Now, null, cancellationToken)
+                    state, expectedVersion, "rest_confirmed", _clock.Now,
+                    rest.EndAt.ToUniversalTime().ToString("O"), cancellationToken)
                 .ConfigureAwait(false))
             {
                 return SupervisionResult<TimedRestView>.Fail(
@@ -1006,7 +1015,9 @@ public sealed class SupervisionModule : IAsyncDisposable
         Guid commitmentId,
         int expectedVersion,
         DateTimeOffset? endAt,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? sourceEventId = null,
+        string? sourceEventOutcome = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (endAt is null)
@@ -1045,7 +1056,9 @@ public sealed class SupervisionModule : IAsyncDisposable
                 IdleStartedAt = null
             };
             if (!await _store.PersistRuntimeAndResponseAsync(
-                    state, expectedVersion, "timed_rest_started", _clock.Now, null, cancellationToken)
+                    state, expectedVersion, "timed_rest_started", _clock.Now,
+                    rest.EndAt.ToUniversalTime().ToString("O"), cancellationToken, sourceEventId,
+                    sourceEventOutcome)
                 .ConfigureAwait(false))
             {
                 return SupervisionResult<TimedRestView>.Fail(
@@ -1071,6 +1084,7 @@ public sealed class SupervisionModule : IAsyncDisposable
             var active = commitments.SingleOrDefault(commitment =>
                 commitment.Kind == CommitmentKind.Computer &&
                 !commitment.IsSkipped &&
+                commitment.EndedEarlyAt is null &&
                 commitment.StartAt <= now && now < commitment.EndAt);
             if (active is null)
             {
@@ -1155,6 +1169,7 @@ public sealed class SupervisionModule : IAsyncDisposable
             var active = commitments.SingleOrDefault(commitment =>
                 commitment.Kind == CommitmentKind.Computer &&
                 !commitment.IsSkipped &&
+                commitment.EndedEarlyAt is null &&
                 commitment.StartAt <= now && now < commitment.EndAt);
             var activeView = active is null
                 ? null
@@ -1168,6 +1183,109 @@ public sealed class SupervisionModule : IAsyncDisposable
                 await _store.ReadTemplatesAsync(includeArchived: false, cancellationToken)
                     .ConfigureAwait(false),
                 await _store.ReadPlansAsync(cancellationToken).ConfigureAwait(false));
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<SupervisionResult<CommitmentView>> EndCommitmentEarlyAsync(
+        Guid commitmentId,
+        int expectedVersion,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var changed = await _store.EndEarlyAsync(
+                commitmentId, expectedVersion, _clock.Now, cancellationToken).ConfigureAwait(false);
+            if (!changed)
+            {
+                return SupervisionResult<CommitmentView>.Fail(
+                    "commitment_version_stale", "承诺状态或版本已经变化，请刷新后再操作。");
+            }
+
+            var commitments = await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            var current = commitments.Single(item => item.Id == commitmentId);
+            var rules = await _store.ReadActivityRulesAsync(
+                ActivityRuleScope.Commitment, current.Id, cancellationToken).ConfigureAwait(false);
+            return SupervisionResult<CommitmentView>.Ok(ToView(current, _clock.Now, rules));
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<SupervisionResult<CommitmentView>> CancelCommitmentAsync(
+        Guid commitmentId,
+        int expectedVersion,
+        string reason,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedReason = reason.Trim();
+        if (normalizedReason.Length == 0)
+            return SupervisionResult<CommitmentView>.Fail("cancellation_reason_required", "取消原因不能为空。");
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!await _store.CancelCommitmentAsync(
+                    commitmentId, expectedVersion, _clock.Now, normalizedReason, cancellationToken)
+                .ConfigureAwait(false))
+                return SupervisionResult<CommitmentView>.Fail(
+                    "commitment_version_stale", "承诺状态或版本已经变化，请刷新后再操作。");
+            var current = (await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                .Single(item => item.Id == commitmentId);
+            var rules = await _store.ReadActivityRulesAsync(
+                ActivityRuleScope.Commitment, commitmentId, cancellationToken).ConfigureAwait(false);
+            if (_latestActivity is not null) _latestActivity = null;
+            return SupervisionResult<CommitmentView>.Ok(ToView(current, _clock.Now, rules));
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<SupervisionResult<CommitmentView>> DeferActiveCommitmentAsync(
+        Guid commitmentId,
+        int expectedVersion,
+        DateTimeOffset newStartAt,
+        string reason,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedReason = reason.Trim();
+        if (normalizedReason.Length == 0)
+            return SupervisionResult<CommitmentView>.Fail("defer_reason_required", "推迟原因不能为空。");
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var current = (await _store.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                .SingleOrDefault(item => item.Id == commitmentId);
+            if (current is null || current.Version != expectedVersion || current.IsSkipped ||
+                current.EndedEarlyAt is not null || current.StartAt > _clock.Now || current.EndAt <= _clock.Now)
+                return SupervisionResult<CommitmentView>.Fail(
+                    "commitment_version_stale", "只能推迟当前仍在进行的同版本承诺。");
+            if (newStartAt <= _clock.Now)
+                return SupervisionResult<CommitmentView>.Fail("deferred_start_invalid", "新的开始时间必须晚于现在。");
+            var remaining = current.EndAt - _clock.Now;
+            var rules = await _store.ReadActivityRulesAsync(
+                ActivityRuleScope.Commitment, commitmentId, cancellationToken).ConfigureAwait(false);
+            var deferred = ToCard(current, rules) with
+            {
+                CandidateId = Guid.NewGuid(),
+                StartAt = newStartAt,
+                EndAt = newStartAt.Add(remaining),
+                ConfirmationNotice = "确认后当前监督立即停止，并以剩余时长建立一条新的未来承诺。"
+            };
+            var result = await _store.DeferCommitmentAsync(
+                current, deferred, rules, _clock.Now, normalizedReason, cancellationToken)
+                .ConfigureAwait(false);
+            if (!result.Success)
+                return SupervisionResult<CommitmentView>.Fail(result.ErrorCode!, result.Message!);
+            _latestActivity = null;
+            return SupervisionResult<CommitmentView>.Ok(ToView(result.Value!, _clock.Now, rules));
         }
         finally
         {
@@ -1402,7 +1520,8 @@ public sealed class SupervisionModule : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         foreach (var commitment in commitments.Where(item =>
-                     !item.IsSkipped && item.ReminderSettings.StartReminderEnabled &&
+                     !item.IsSkipped && item.EndedEarlyAt is null &&
+                     item.ReminderSettings.StartReminderEnabled &&
                      item.StartReminderSentAt is null &&
                      item.StartAt <= now && now < item.EndAt))
         {
@@ -1715,7 +1834,8 @@ public sealed class SupervisionModule : IAsyncDisposable
     {
         if (commitment.IsSkipped) return CommitmentPhase.Skipped;
         if (now < commitment.StartAt) return CommitmentPhase.Scheduled;
-        if (now >= commitment.EndAt) return CommitmentPhase.AwaitingReview;
+        if (commitment.EndedEarlyAt is not null || now >= commitment.EndAt)
+            return CommitmentPhase.AwaitingReview;
         if (commitment.Kind == CommitmentKind.Offline) return CommitmentPhase.ActiveUnsupervised;
         return now < commitment.StartAt.AddMinutes(5)
             ? CommitmentPhase.PreparationBuffer
@@ -1767,7 +1887,7 @@ public sealed class SupervisionModule : IAsyncDisposable
     private static DateTimeOffset? Min(DateTimeOffset? first, DateTimeOffset? second) =>
         first is null ? second : second is null ? first : first <= second ? first : second;
 
-    private static SupervisionResult<CommitmentTemplateView> NormalizeTemplate(
+    internal static SupervisionResult<CommitmentTemplateView> NormalizeTemplate(
         CommitmentTemplateDraft draft,
         DateTimeOffset now,
         CommitmentTemplateView? existing = null)

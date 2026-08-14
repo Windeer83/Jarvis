@@ -20,6 +20,8 @@ public partial class MainWindow : Window
     private Guid? _selectedTemplateId;
     private Guid? _selectedPlanId;
     private SupervisionSnapshot? _snapshot;
+    private CompanionSnapshot? _companionSnapshot;
+    private NaturalLanguageOperationCandidate? _naturalLanguageCandidate;
     private CommitmentView? _revisionSource;
     private readonly LocalReminderSoundGate _soundGate = new();
     private bool _refreshing;
@@ -40,6 +42,8 @@ public partial class MainWindow : Window
         RecurrenceKindBox.SelectedItem = RecurrenceKind.Daily;
         ChangeScopeBox.ItemsSource = Enum.GetValues<RecurrenceChangeScope>();
         ChangeScopeBox.SelectedItem = RecurrenceChangeScope.ThisOccurrence;
+        CompletionAssessmentBox.ItemsSource = Enum.GetValues<CompletionAssessment>();
+        CompletionAssessmentBox.SelectedItem = CompletionAssessment.Completed;
 
         var suggestedStart = DateTime.Now.AddMinutes(5);
         StartDatePicker.SelectedDate = suggestedStart.Date;
@@ -711,12 +715,14 @@ public partial class MainWindow : Window
                 CommitmentGrid.SelectedItem = null;
                 ConfirmOfflineButton.IsEnabled = false;
                 LatestReminderText.Text = "";
+                ClearCompanionProjection();
                 ClearSupervisionProjection();
                 return;
             }
 
             CoreStatusText.Text = "已连接 Core · SQLite 正式状态由 Core 独占写入";
             ApplySnapshot(response.Snapshot);
+            ApplyCompanionSnapshot(response.CompanionOutcome?.Snapshot);
         }
         finally
         {
@@ -1290,6 +1296,357 @@ public partial class MainWindow : Window
             CommitmentId: _snapshot?.ActiveComputerCommitmentId,
             RestEndAt: new DateTimeOffset(localEnd),
             ExpectedVersion: _snapshot?.ActiveSupervision?.CommitmentVersion));
+    }
+
+    private async void InterpretNaturalLanguageButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendCompanionAsync(new InterpretNaturalLanguageCommand(
+            NaturalLanguageBox.Text, CandidateSource.Desktop));
+
+    private async void ConfirmNaturalLanguageCandidateButton_Click(
+        object sender,
+        RoutedEventArgs eventArgs)
+    {
+        if (_naturalLanguageCandidate is null)
+        {
+            SetOperationStatus("当前没有可确认的自然语言候选操作。", isError: true);
+            return;
+        }
+
+        await SendCompanionAsync(
+            new ConfirmNaturalLanguageCandidateCommand(_naturalLanguageCandidate.CandidateId));
+    }
+
+    private async void DiscardNaturalLanguageCandidateButton_Click(
+        object sender,
+        RoutedEventArgs eventArgs)
+    {
+        if (_naturalLanguageCandidate is null)
+        {
+            SetOperationStatus("当前没有可放弃的自然语言候选操作。", isError: true);
+            return;
+        }
+
+        await SendCompanionAsync(
+            new DiscardNaturalLanguageCandidateCommand(_naturalLanguageCandidate.CandidateId));
+    }
+
+    private async void SaveAiCredentialButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var credential = AiCredentialBox.Password;
+        await SendCompanionAsync(new SaveAiCredentialCommand(credential));
+        AiCredentialBox.Clear();
+    }
+
+    private async void DeleteAiCredentialButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendCompanionAsync(new DeleteAiCredentialCommand());
+
+    private async void SendAiChatButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var command = new RequestAiChatCommand(AiChatBox.Text);
+        var outcome = await SendCompanionAsync(command);
+        if (outcome?.ErrorCode == "ai_cost_confirmation_required")
+        {
+            var confirmation = MessageBox.Show(
+                $"{outcome.Message}\n\n仍要继续吗？",
+                "确认本次 AI 费用",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirmation == MessageBoxResult.Yes)
+                await SendCompanionAsync(command with { ApprovedEstimatedCostOverOneCny = true });
+        }
+    }
+
+    private async void ConfigureWorktimeButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendCompanionAsync(new ConfigureWorktimeChannelCommand(
+            WorktimeEnabledBox.IsChecked == true,
+            LarkCliPathBox.Text,
+            LarkProfileBox.Text,
+            DetailedPreviewBox.IsChecked == true
+                ? NotificationPreviewMode.Detailed
+                : NotificationPreviewMode.Privacy));
+
+    private async void EndSelectedCommitmentButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        {
+            SetOperationStatus("请先在正式状态中选择要提前结束的承诺。", isError: true);
+            return;
+        }
+
+        await SendCompanionAsync(new EndCommitmentEarlyCommand(commitment.Id, commitment.Version));
+    }
+
+    private async void CancelSelectedCommitmentButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        {
+            SetOperationStatus("请先在正式状态中选择要取消的承诺。", isError: true);
+            return;
+        }
+        var reason = CommitmentChangeReasonBox.Text.Trim();
+        if (reason.Length == 0)
+        {
+            SetOperationStatus("取消承诺必须填写原因。", isError: true);
+            return;
+        }
+        if (MessageBox.Show(
+                $"确认取消所选承诺？\n\n原因：{reason}\n历史会保留，且不会标记完成。",
+                "确认取消承诺", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+        await SendCompanionAsync(new CancelCommitmentCommand(commitment.Id, commitment.Version, reason));
+    }
+
+    private async void DeferSelectedCommitmentButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        {
+            SetOperationStatus("请先在正式状态中选择要推迟的进行中承诺。", isError: true);
+            return;
+        }
+        var reason = CommitmentChangeReasonBox.Text.Trim();
+        if (reason.Length == 0)
+        {
+            SetOperationStatus("推迟承诺必须填写原因。", isError: true);
+            return;
+        }
+        if (!DateTime.TryParseExact(
+                CommitmentDeferStartBox.Text.Trim(), "yyyy-MM-dd HH:mm",
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out var localStart))
+        {
+            SetOperationStatus("推迟时间请使用 yyyy-MM-dd HH:mm。", isError: true);
+            return;
+        }
+        localStart = DateTime.SpecifyKind(localStart, DateTimeKind.Local);
+        var newStart = new DateTimeOffset(localStart);
+        if (newStart <= DateTimeOffset.Now)
+        {
+            SetOperationStatus("推迟后的开始时间必须在未来。", isError: true);
+            return;
+        }
+        if (MessageBox.Show(
+                $"确认把当前监督推迟到 {newStart:yyyy-MM-dd HH:mm}？\n\n" +
+                "当前承诺将进入待回顾，并按剩余时长建立新承诺。",
+                "确认推迟承诺", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+        await SendCompanionAsync(new DeferActiveCommitmentCommand(
+            commitment.Id, commitment.Version, newStart, reason));
+    }
+
+    private async void SubmitCommitmentReviewButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        {
+            SetOperationStatus("请先选择一条待回顾承诺。", isError: true);
+            return;
+        }
+
+        await SendCompanionAsync(new SubmitCommitmentReviewCommand(
+            commitment.Id,
+            CommitmentReviewTextBox.Text,
+            CompletionAssessmentBox.SelectedItem is CompletionAssessment assessment
+                ? assessment
+                : null));
+        CommitmentReviewTextBox.Clear();
+    }
+
+    private async void DeferCommitmentReviewButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        {
+            SetOperationStatus("请先选择一条待回顾承诺。", isError: true);
+            return;
+        }
+        await SendCompanionAsync(new DeferCommitmentReviewCommand(commitment.Id, 30));
+    }
+
+    private async void SkipCommitmentReviewButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        {
+            SetOperationStatus("请先选择一条待回顾承诺。", isError: true);
+            return;
+        }
+        await SendCompanionAsync(new SkipCommitmentReviewCommand(commitment.Id));
+    }
+
+    private async void ConfigureDailyReviewButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!TimeOnly.TryParseExact(
+                DailyReviewTimeBox.Text.Trim(), ["H:mm", "HH:mm"],
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
+        {
+            SetOperationStatus("每日复盘时间请填写 HH:mm。", isError: true);
+            return;
+        }
+
+        await SendCompanionAsync(new ConfigureDailyReviewCommand(time));
+    }
+
+    private async void StartDailyReviewButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendCompanionAsync(new StartDailyReviewCommand());
+
+    private async void SnoozeDailyReviewButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendCompanionAsync(new SnoozeDailyReviewCommand(30));
+
+    private async void SnoozeDailyReviewSixtyButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendCompanionAsync(new SnoozeDailyReviewCommand(60));
+
+    private async void SkipDailyReviewButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendCompanionAsync(new SkipDailyReviewCommand());
+
+    private async void AnswerDailyReviewButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var review = _companionSnapshot?.DailyReview;
+        if (review?.SessionId is null)
+        {
+            SetOperationStatus("当前没有进行中的每日复盘。", isError: true);
+            return;
+        }
+
+        await SendCompanionAsync(new RespondDailyReviewCommand(
+            review.SessionId.Value, DailyReviewAnswerBox.Text));
+        DailyReviewAnswerBox.Clear();
+    }
+
+    private async void ConfigureCycleReviewButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!int.TryParse(CycleIntervalBox.Text, out var days) ||
+            !TimeOnly.TryParseExact(
+                CycleReviewTimeBox.Text.Trim(), ["H:mm", "HH:mm"],
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
+        {
+            SetOperationStatus("周期天数和时间格式无效。", isError: true);
+            return;
+        }
+
+        await SendCompanionAsync(new ConfigureCycleReviewCommand(
+            DateOnly.FromDateTime(DateTime.Today), days, time));
+    }
+
+    private async void StartCycleReviewButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendCompanionAsync(new StartCycleReviewCommand());
+
+    private async void ConfirmCycleFocusesButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var focuses = CycleFocusesBox.Text
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        await SendCompanionAsync(new ConfirmCycleFocusesCommand(focuses));
+    }
+
+    private async Task<CompanionOutcome?> SendCompanionAsync(CompanionCommand command)
+    {
+        var response = await _coreClient.SendAsync(new CoreRequest(
+            CoreOperations.DispatchCompanion,
+            Companion: command));
+        var outcome = response.CompanionOutcome;
+        if (!response.Success || outcome is null)
+        {
+            SetOperationStatus(response.Message ?? "Core 未返回助手操作结果。", isError: true);
+            return outcome;
+        }
+
+        SetOperationStatus(outcome.Message ?? (outcome.Success ? "已处理。" : "操作失败。"), !outcome.Success);
+        if (outcome.Snapshot is not null)
+            ApplyCompanionSnapshot(outcome.Snapshot);
+        if (outcome.AssistantText is not null)
+            AiChatResultText.Text = outcome.AssistantText;
+        if (outcome.Candidate is not null)
+        {
+            _naturalLanguageCandidate = outcome.Candidate;
+            NaturalLanguageCandidateText.Text = outcome.Candidate.Summary;
+        }
+        if (outcome.Success)
+            await RefreshSnapshotAsync();
+        return outcome;
+    }
+
+    private void ApplyCompanionSnapshot(CompanionSnapshot? snapshot)
+    {
+        if (snapshot is null) return;
+        _companionSnapshot = snapshot;
+        _naturalLanguageCandidate = snapshot.PendingCandidate;
+
+        var ai = snapshot.Ai;
+        AiStatusText.Text = ai.Enabled
+            ? $"{ai.Provider} · {ai.Model} · Key …{ai.CredentialLastFour} · 本月 ¥{ai.MonthSpendCny:F4}/¥{ai.MonthlyHardCapCny:F0}"
+            : $"{ai.Provider} · {ai.Model} · 未配置（表单、模板和监督仍可用）";
+        if (ai.Alert24Reached) AiStatusText.Text += " · 已达到 ¥24 预警";
+        else if (ai.Alert15Reached) AiStatusText.Text += " · 已达到 ¥15 预警";
+        if (!string.IsNullOrWhiteSpace(ai.LastError)) AiStatusText.Text += $" · 最近错误：{ai.LastError}";
+        NaturalLanguageCandidateText.Text = snapshot.PendingCandidate?.Summary ?? "当前没有候选操作。";
+        AiChatResultText.Text = snapshot.RecentChat.LastOrDefault(item => item.Role == "assistant")?.Text ?? "";
+
+        var channel = snapshot.WorktimeChannel;
+        WorktimeEnabledBox.IsChecked = channel.Enabled;
+        DetailedPreviewBox.IsChecked = channel.PreviewMode == NotificationPreviewMode.Detailed;
+        if (!string.IsNullOrWhiteSpace(channel.Profile)) LarkProfileBox.Text = channel.Profile;
+        WorktimeStatusText.Text = !channel.Enabled
+            ? "飞书通道未启用"
+            : $"监听：{(channel.ListenerReady ? "就绪" : "未就绪")} · 用户：{(channel.UserBound ? $"已绑定 …{channel.BoundUserSuffix}" : "未绑定")}" +
+              (string.IsNullOrWhiteSpace(channel.LastError) ? "" : $" · {channel.LastError}");
+        MobileCardGrid.ItemsSource = snapshot.MobileCards.OrderByDescending(item => item.SentAt).ToArray();
+
+        CommitmentReviewList.ItemsSource = snapshot.CommitmentReviews
+            .OrderByDescending(item => item.RequestedAt)
+            .Select(item => $"{item.CommitmentId.ToString()[..8]} · v{item.CommitmentVersion} · {item.State}" +
+                            (item.Assessment is null ? "" : $" · {item.Assessment}"))
+            .ToArray();
+        DailyReviewTimeBox.Text = snapshot.DailyReview.ScheduledLocalTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+        DailyReviewQuestionText.Text = snapshot.DailyReview.FactsSummary + "\n\n" + DailyQuestion(snapshot.DailyReview);
+
+        var cycle = snapshot.CycleReview;
+        CycleIntervalBox.Text = cycle.IntervalDays.ToString(CultureInfo.InvariantCulture);
+        CycleReviewSummaryText.Text = cycle.Trends is null
+            ? $"周期复盘：{cycle.State}"
+            : $"{cycle.PeriodStart:yyyy-MM-dd} 至 {cycle.PeriodEnd:yyyy-MM-dd} · " +
+              $"计划 {cycle.Trends.PlannedCommitments} 项/{cycle.Trends.PlannedMinutes:F0} 分钟 · " +
+              $"实际可观察 {cycle.Trends.ObservedMinutes:F0} 分钟 · " +
+              $"相关 {cycle.Trends.RelatedMinutes:F0} · 分心 {cycle.Trends.DistractingMinutes:F0} · " +
+              $"休息 {cycle.Trends.RestMinutes:F0} 分钟 · 推迟 {cycle.Trends.DeferredReviews} · 未回应 {cycle.Trends.NoResponseCount}";
+        if (cycle.Trends is not null)
+        {
+            var commitmentLines = cycle.Trends.Commitments.Select(item =>
+                $"承诺 {item.CommitmentId.ToString()[..8]} · {item.LocalDate:MM-dd} · " +
+                $"投入目标：{item.InputGoal ?? "—"}（计划 {item.PlannedMinutes:F0} 分钟 / 相关记录 {item.RelatedMinutes:F0} 分钟）· " +
+                $"成果目标：{item.OutcomeGoal ?? "—"}（{item.Assessment?.ToString() ?? "未评估"}；{item.ReviewText ?? "无回顾原文"}）· " +
+                $"偏离 {item.DistractingMinutes:F0} / 休息 {item.RestMinutes:F0} 分钟");
+            var dailyLines = cycle.Trends.DailyReviews.Select(item =>
+                $"每日复盘 {item.SessionId.ToString()[..8]} · {item.ReviewDate:MM-dd} · {item.State} · {item.AnswerCount} 条原始回答");
+            var details = commitmentLines.Concat(dailyLines).ToArray();
+            if (details.Length > 0)
+                CycleReviewSummaryText.Text += "\n\n可追溯明细：\n" + string.Join("\n", details);
+        }
+        if (cycle.ConfirmedFocuses.Count > 0)
+            CycleFocusesBox.Text = string.Join(Environment.NewLine, cycle.ConfirmedFocuses);
+    }
+
+    private void ClearCompanionProjection()
+    {
+        _companionSnapshot = null;
+        _naturalLanguageCandidate = null;
+        WorktimeStatusText.Text = "Core 未连接";
+        MobileCardGrid.ItemsSource = null;
+        CommitmentReviewList.ItemsSource = null;
+        NaturalLanguageCandidateText.Text = "Core 未连接；没有可确认候选。";
+        AiStatusText.Text = "Core 未连接";
+        DailyReviewQuestionText.Text = "Core 未连接";
+        CycleReviewSummaryText.Text = "Core 未连接";
+    }
+
+    private static string DailyQuestion(DailyReviewView review)
+    {
+        if (review.State != ReviewSessionState.InProgress || review.CurrentQuestion is null)
+            return $"每日复盘：{review.State}";
+        return review.CurrentQuestion switch
+        {
+            ReviewQuestionKind.Facts => "今天实际完成了什么？",
+            ReviewQuestionKind.PendingCommitments => "还有哪些承诺待回顾或未收口？",
+            ReviewQuestionKind.WhatWentWell => "今天哪些做法有效？",
+            ReviewQuestionKind.WhatWentPoorly => "今天哪里不理想？",
+            ReviewQuestionKind.Reasons => "你认为主要原因是什么？",
+            ReviewQuestionKind.TomorrowAdjustments => "明天准备确认哪 1–3 个调整？",
+            _ => "请继续回答。"
+        };
     }
 
     private void PresentationMode_Changed(object sender, RoutedEventArgs eventArgs)
