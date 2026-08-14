@@ -87,12 +87,12 @@ internal sealed partial class SqliteCommitmentStore
         var version = Convert.ToInt32(
             await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
-        if (version > 5)
+        if (version > 6)
         {
-            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 5。");
+            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 6。");
         }
 
-        if (version == 5)
+        if (version == 6)
         {
             return;
         }
@@ -107,9 +107,29 @@ internal sealed partial class SqliteCommitmentStore
                 .ConfigureAwait(false);
         }
 
-        await MigrateToVersionFiveAsync(connection, migration, cancellationToken)
-            .ConfigureAwait(false);
+        if (version < 5)
+        {
+            await MigrateToVersionFiveAsync(connection, migration, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        await MigrateToVersionSixAsync(connection, migration, cancellationToken).ConfigureAwait(false);
         await migration.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task MigrateToVersionSixAsync(
+        SqliteConnection connection,
+        SqliteTransaction migration,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteSchemaAsync(connection, migration, """
+            ALTER TABLE mobile_escalation_cards
+                ADD COLUMN counted_deviation_seconds REAL NOT NULL DEFAULT 0;
+            UPDATE mobile_escalation_cards
+               SET counted_deviation_seconds = ROUND(MAX(
+                   0,
+                   (julianday(sent_at_utc) - julianday(deviation_started_at_utc)) * 86400.0), 0);
+            PRAGMA user_version = 6;
+            """, cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task MigrateToVersionFiveAsync(

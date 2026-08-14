@@ -62,6 +62,50 @@ public sealed class CompanionWorkflowScenarios
     }
 
     [Fact]
+    public async Task Mobile_escalation_pauses_during_unobservable_time_and_never_replays_stale_minutes()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        var activity = new FakeActivitySource();
+        await using var supervision = await SupervisionModule.OpenAsync(
+            database.Path, clock, activity, new FakeReminderSink());
+        await ConfirmActiveComputerAsync(supervision, clock, activity);
+        var channel = new FakeWorktimeChannel();
+        await using var companion = await CompanionModule.OpenAsync(
+            database.Path, supervision, clock, channel, new FakeAiProvider(), new FakeCredentialStore());
+        await companion.DispatchAsync(new ConfigureWorktimeChannelCommand(true, "lark-cli", "test"));
+        await companion.DispatchAsync(new BindWorktimeUserCommand("bind-gap", "ou_test", "oc", "om"));
+
+        clock.Now = Start.AddMinutes(10);
+        activity.Next = new ActivityObservation(
+            ActivityAvailability.Unobservable, false, null, clock.Now);
+        await supervision.TickAsync();
+        await companion.AdvanceAsync();
+        clock.Now = Start.AddMinutes(40);
+        activity.Next = new ActivityObservation(
+            ActivityAvailability.Unobservable, false, null, clock.Now);
+        await supervision.TickAsync();
+        await companion.AdvanceAsync();
+        Assert.Empty(channel.Sent);
+
+        activity.Next = Distracting(clock.Now);
+        await supervision.TickAsync();
+        await companion.AdvanceAsync();
+        clock.Now = Start.AddMinutes(49);
+        activity.Next = Distracting(clock.Now);
+        await supervision.TickAsync();
+        await companion.AdvanceAsync();
+        Assert.Empty(channel.Sent);
+
+        clock.Now = Start.AddMinutes(50);
+        activity.Next = Distracting(clock.Now);
+        await supervision.TickAsync();
+        await companion.AdvanceAsync();
+        Assert.Single(channel.Sent);
+        Assert.Equal(TimeSpan.FromMinutes(20), channel.Sent[0].CountedDeviation);
+    }
+
+    [Fact]
     public async Task Planned_or_early_end_enters_review_and_raw_text_survives_restart()
     {
         using var database = new TemporaryDatabase();

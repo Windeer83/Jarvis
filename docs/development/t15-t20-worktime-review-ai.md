@@ -53,7 +53,7 @@ Jarvis 本机月度硬上限默认为 30 元，15 元和 24 元显示预警；�
 
 ### Issue 验收映射
 
-- T15：`Mobile_escalation_starts_at_twenty_minutes_replaces_old_card_and_stops_at_three`、`Recovery_cancels_the_old_card_and_a_new_deviation_restarts_at_sequence_one`、卡片隐私/四动作与投递重试场景。
+- T15：`Mobile_escalation_starts_at_twenty_minutes_replaces_old_card_and_stops_at_three`、无法观察时暂停累计且不补发旧提醒、`Recovery_cancels_the_old_card_and_a_new_deviation_restarts_at_sequence_one`、卡片隐私/四动作与投递重试场景。
 - T16：`Planned_or_early_end_enters_review_and_raw_text_survives_restart`，并由 Core 的立即、30/60 分钟稍后和明确跳过状态迁移覆盖三种选择。
 - T17：默认 23:00、在线单次邀请、工作中顺延、离线待补、30 分钟仅追问一次、逐问与 1–3 项次日调整分别有独立场景。
 - T18：`Cycle_review_uses_traceable_aggregates_and_keeps_one_to_three_confirmed_focuses` 与休息分钟追溯场景覆盖周期边界、事实来源和 1–3 个重点。

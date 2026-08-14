@@ -538,7 +538,7 @@ internal static class LarkEscalationCardJson
 {
     public static string Build(MobileEscalationCard card, bool interactive)
     {
-        var elapsed = card.SentAt - card.DeviationStartedAt;
+        var elapsed = card.CountedDeviation ?? (card.SentAt - card.DeviationStartedAt);
         var elements = new JsonArray
         {
             Highlight($"**已连续偏离 {Math.Floor(elapsed.TotalMinutes):0} 分钟**\n请决定下一步。", "yellow-50"),

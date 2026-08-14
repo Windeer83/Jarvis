@@ -82,7 +82,7 @@ public sealed class SqliteMigrationScenarios
         await connection.OpenAsync();
         await using var version = connection.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
-        Assert.Equal(5L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal(6L, (long)(await version.ExecuteScalarAsync())!);
         await using var planningTables = connection.CreateCommand();
         planningTables.CommandText = """
             SELECT count(*)
@@ -128,7 +128,7 @@ public sealed class SqliteMigrationScenarios
             await AssertVersionThreeDataWasBackfilledAsync(module);
         }
 
-        await AssertUserVersionAsync(database.Path, 5);
+        await AssertUserVersionAsync(database.Path, 6);
 
         await using (var reopened = await SupervisionModule.OpenAsync(
                          database.Path, clock, new FakeActivitySource(), new FakeReminderSink()))
@@ -136,7 +136,48 @@ public sealed class SqliteMigrationScenarios
             await AssertVersionThreeDataWasBackfilledAsync(reopened);
         }
 
-        await AssertUserVersionAsync(database.Path, 5);
+        await AssertUserVersionAsync(database.Path, 6);
+    }
+
+    [Fact]
+    public async Task Version_five_mobile_cards_backfill_displayed_deviation_and_reopen_as_version_six()
+    {
+        using var database = new TemporaryDatabase();
+        await CreateVersionThreeDatabaseAsync(database.Path);
+        await using (var connection = new SqliteConnection($"Data Source={database.Path};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using var migration = (SqliteTransaction)await connection.BeginTransactionAsync();
+            await SqliteCommitmentStore.MigrateToVersionFourAsync(
+                connection, migration, CancellationToken.None);
+            await SqliteCommitmentStore.MigrateToVersionFiveAsync(
+                connection, migration, CancellationToken.None);
+            await migration.CommitAsync();
+            await using var card = connection.CreateCommand();
+            card.CommandText = """
+                INSERT INTO mobile_escalation_cards(
+                    card_id,commitment_id,commitment_version,sequence,sent_at_utc,
+                    planned_start_at_utc,planned_end_at_utc,deviation_started_at_utc,
+                    classification,commitment_summary,privacy_preview,state,platform_message_id,
+                    default_rest_minutes,invalidation_result_text)
+                VALUES(
+                    '44444444-4444-4444-4444-444444444444',
+                    '11111111-1111-1111-1111-111111111111',1,1,
+                    '2026-08-12T01:20:00.0000000+00:00',
+                    '2026-08-12T01:00:00.0000000+00:00',
+                    '2026-08-12T02:00:00.0000000+00:00',
+                    '2026-08-12T01:00:00.0000000+00:00',
+                    1,'v5 card','privacy',1,NULL,15,NULL);
+                """;
+            await card.ExecuteNonQueryAsync();
+        }
+
+        var commitmentStore = new SqliteCommitmentStore(database.Path);
+        await commitmentStore.InitializeAsync(CancellationToken.None);
+        var companionStore = new SqliteCompanionStore(database.Path);
+        var migrated = Assert.Single(await companionStore.ReadMobileCardsAsync(CancellationToken.None));
+        Assert.Equal(TimeSpan.FromMinutes(20), migrated.CountedDeviation);
+        await AssertUserVersionAsync(database.Path, 6);
     }
 
     [Fact]

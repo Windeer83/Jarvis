@@ -105,7 +105,8 @@ public sealed record MobileEscalationCard(
     MobileCardState State = MobileCardState.Active,
     string? PlatformMessageId = null,
     int DefaultRestMinutes = 15,
-    string? InvalidationResultText = null);
+    string? InvalidationResultText = null,
+    TimeSpan? CountedDeviation = null);
 
 public sealed record WorktimeChannelView(
     bool Enabled,

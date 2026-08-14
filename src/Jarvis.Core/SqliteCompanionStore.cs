@@ -321,7 +321,7 @@ internal sealed class SqliteCompanionStore
             SELECT card_id,commitment_id,commitment_version,sequence,sent_at_utc,
                    planned_start_at_utc,planned_end_at_utc,deviation_started_at_utc,
                    classification,commitment_summary,privacy_preview,state,platform_message_id,
-                   default_rest_minutes,invalidation_result_text
+                   default_rest_minutes,invalidation_result_text,counted_deviation_seconds
             FROM mobile_escalation_cards ORDER BY sent_at_utc, sequence;
             """;
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -334,7 +334,8 @@ internal sealed class SqliteCompanionStore
                 Parse(reader.GetString(6)), Parse(reader.GetString(7)),
                 (ActivityClassification)reader.GetInt32(8), reader.GetString(9), reader.GetString(10),
                 (MobileCardState)reader.GetInt32(11), reader.IsDBNull(12) ? null : reader.GetString(12),
-                reader.GetInt32(13), reader.IsDBNull(14) ? null : reader.GetString(14)));
+                reader.GetInt32(13), reader.IsDBNull(14) ? null : reader.GetString(14),
+                TimeSpan.FromSeconds(reader.GetDouble(15))));
         }
 
         return result;
@@ -351,9 +352,9 @@ internal sealed class SqliteCompanionStore
                 card_id,commitment_id,commitment_version,sequence,sent_at_utc,
                 planned_start_at_utc,planned_end_at_utc,deviation_started_at_utc,
                 classification,commitment_summary,privacy_preview,state,platform_message_id,
-                default_rest_minutes,invalidation_result_text)
+                default_rest_minutes,invalidation_result_text,counted_deviation_seconds)
             VALUES($card,$commitment,$version,$sequence,$sent,$start,$end,$deviation,
-                $classification,$summary,$preview,$state,$message,$rest,$result);
+                $classification,$summary,$preview,$state,$message,$rest,$result,$counted);
             """;
         Add(command, "$card", card.CardId.ToString("D"));
         Add(command, "$commitment", card.CommitmentId.ToString("D"));
@@ -370,6 +371,7 @@ internal sealed class SqliteCompanionStore
         Add(command, "$message", card.PlatformMessageId);
         Add(command, "$rest", card.DefaultRestMinutes);
         Add(command, "$result", card.InvalidationResultText);
+        Add(command, "$counted", (card.CountedDeviation ?? (card.SentAt - card.DeviationStartedAt)).TotalSeconds);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 

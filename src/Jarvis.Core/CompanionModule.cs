@@ -355,7 +355,7 @@ internal sealed class CompanionModule : IAsyncDisposable
             : supervision.Commitments.SingleOrDefault(item => item.Id == active.CommitmentId);
         if (!settings.Enabled || string.IsNullOrWhiteSpace(settings.BoundUserId) || active is null ||
             commitment is null || active.DeviationStartedAt is null || active.ActiveRest is not null ||
-            active.Classification == ActivityClassification.Related)
+            active.Classification is null or ActivityClassification.Related)
         {
             await CancelCardsAsync(
                 allCards.Where(card => card.State is MobileCardState.Active or MobileCardState.PendingDelivery),
@@ -370,7 +370,7 @@ internal sealed class CompanionModule : IAsyncDisposable
                                     card.DeviationStartedAt != active.DeviationStartedAt.Value)),
             cancellationToken);
 
-        var elapsed = _clock.Now - active.DeviationStartedAt.Value;
+        var elapsed = active.CountedDeviation;
         var first = commitment.ReminderSettings.FirstMobileDeviationMinutes;
         var repeat = commitment.ReminderSettings.MobileRepeatMinutes;
         var max = commitment.ReminderSettings.MaxMobileReminders;
@@ -399,7 +399,8 @@ internal sealed class CompanionModule : IAsyncDisposable
             commitment.OutcomeGoal ?? commitment.InputGoal ?? "当前工作承诺",
             BuildNotificationPreview(settings.PreviewMode, commitment, active, elapsed),
             MobileCardState.PendingDelivery,
-            DefaultRestMinutes: commitment.RestSettings.DefaultTotalRestMinutes);
+            DefaultRestMinutes: commitment.RestSettings.DefaultTotalRestMinutes,
+            CountedDeviation: elapsed);
         if (pending is null)
             await _store.InsertMobileCardAsync(card, cancellationToken).ConfigureAwait(false);
         var delivery = await _worktimeChannel.SendAsync(card, cancellationToken).ConfigureAwait(false);
