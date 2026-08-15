@@ -506,4 +506,5 @@ public static class CoreOperations
     public const string StartTimedRest = "startTimedRest";
     public const string GetSnapshot = "getSnapshot";
     public const string DispatchCompanion = "dispatchCompanion";
+    public const string ExitProduct = "exitProduct";
 }

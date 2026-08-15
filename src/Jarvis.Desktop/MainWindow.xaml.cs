@@ -31,6 +31,9 @@ public partial class MainWindow : Window
     private bool _suppressSelectionEvents;
     private bool _naturalLanguageBusy;
     private bool _aiReviewBusy;
+    private bool _applicationExit;
+
+    public event EventHandler<DesktopPetProjection>? DesktopPetProjectionChanged;
 
     public MainWindow()
     {
@@ -79,6 +82,11 @@ public partial class MainWindow : Window
         };
         Closing += (_, eventArgs) =>
         {
+            if (_applicationExit)
+            {
+                return;
+            }
+
             eventArgs.Cancel = true;
             Hide();
         };
@@ -786,6 +794,7 @@ public partial class MainWindow : Window
         }
 
         ApplyActiveSupervision(snapshot, active);
+        PublishDesktopPetProjection();
     }
 
     private async Task ApplyMutationProjectionAsync(CoreResponse response)
@@ -1866,6 +1875,7 @@ public partial class MainWindow : Window
                 $"{item.PeriodStart:yyyy-MM-dd}–{item.PeriodEnd:yyyy-MM-dd} · {item.Kind} · " +
                 $"{item.Model} · 质量 {item.Evaluation?.QualityRating.ToString(CultureInfo.InvariantCulture) ?? "—"} · " +
                 (item.ConfirmedText ?? item.DraftText)));
+        PublishDesktopPetProjection();
     }
 
     private static string Rate(double? value) => value is null ? "—" : $"{value.Value:P0}";
@@ -1887,6 +1897,7 @@ public partial class MainWindow : Window
         AiReviewDraftBox.Clear();
         AiTrialEvidenceText.Text = "Core 未连接";
         AiReviewHistoryText.Text = "Core 未连接";
+        PublishDesktopPetProjection();
     }
 
     private void SetAiReviewBusy(bool busy)
@@ -2130,8 +2141,66 @@ public partial class MainWindow : Window
         Activate();
     }
 
+    public void OpenConversation()
+    {
+        RestoreConfigurationWindow();
+        CompanionTabs.SelectedIndex = 0;
+        NaturalLanguageBox.BringIntoView();
+        NaturalLanguageBox.Focus();
+    }
+
+    public void OpenCommitmentCreation()
+    {
+        RestoreConfigurationWindow();
+        ContentScrollViewer.ScrollToTop();
+        InputGoalBox.Focus();
+    }
+
+    public async Task StartDefaultTimedRestAsync()
+    {
+        var active = ActiveCommitment();
+        var state = _snapshot?.ActiveSupervision;
+        if (active is null || state is null)
+        {
+            SetOperationStatus("当前没有正在监督的电脑型承诺，无法开始限时休息。", isError: true);
+            RestoreConfigurationWindow();
+            return;
+        }
+
+        var minutes = Math.Clamp(active.RestSettings.DefaultTotalRestMinutes, 1, 1440);
+        await SendActiveOperationAsync(new CoreRequest(
+            CoreOperations.StartTimedRest,
+            CommitmentId: active.Id,
+            ExpectedVersion: state.CommitmentVersion,
+            RestMinutes: minutes));
+    }
+
+    public async Task<bool> RequestProductExitAsync()
+    {
+        var response = await _coreClient.SendAsync(new CoreRequest(CoreOperations.ExitProduct));
+        if (!response.Success)
+        {
+            SetOperationStatus(response.Message ?? "无法请求 Core 完全退出。", isError: true);
+            RestoreConfigurationWindow();
+        }
+
+        return response.Success;
+    }
+
+    public DesktopPetProjection CurrentDesktopPetProjection() =>
+        DesktopPetProjectionBuilder.Build(_snapshot, _companionSnapshot, DateTimeOffset.Now);
+
+    private void PublishDesktopPetProjection() =>
+        DesktopPetProjectionChanged?.Invoke(this, CurrentDesktopPetProjection());
+
     public void StopForApplicationExit()
     {
+        if (_applicationExit)
+        {
+            return;
+        }
+
+        _applicationExit = true;
         _refreshTimer.Stop();
         _reminderOverlay.Close();
     }

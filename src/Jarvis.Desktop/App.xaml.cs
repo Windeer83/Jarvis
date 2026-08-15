@@ -10,6 +10,7 @@ public partial class App : Application
     private CancellationTokenSource? _shutdown;
     private Task? _activationTask;
     private bool _ownsSingleInstance;
+    private DesktopPetWindow? _desktopPet;
 
     protected override void OnStartup(StartupEventArgs eventArgs)
     {
@@ -39,8 +40,26 @@ public partial class App : Application
             activationName);
         _shutdown = new CancellationTokenSource();
 
-        MainWindow = new MainWindow();
-        MainWindow.Show();
+        var window = new MainWindow();
+        var desktopPet = new DesktopPetWindow();
+        MainWindow = window;
+        _desktopPet = desktopPet;
+        window.DesktopPetProjectionChanged += (_, projection) => desktopPet.ApplyProjection(projection);
+        desktopPet.RestoreRequested += (_, _) => window.OpenConversation();
+        desktopPet.CreateCommitmentRequested += (_, _) => window.OpenCommitmentCreation();
+        desktopPet.StartRestRequested += async (_, _) => await window.StartDefaultTimedRestAsync();
+        desktopPet.ExitRequested += async (_, _) =>
+        {
+            if (await window.RequestProductExitAsync())
+            {
+                window.StopForApplicationExit();
+                desktopPet.StopForApplicationExit();
+                Shutdown();
+            }
+        };
+        window.Show();
+        desktopPet.Show();
+        desktopPet.ApplyProjection(window.CurrentDesktopPetProjection());
         _activationTask = Task.Run(() => WaitForActivation(_shutdown.Token));
     }
 
@@ -50,6 +69,8 @@ public partial class App : Application
         {
             window.StopForApplicationExit();
         }
+
+        _desktopPet?.StopForApplicationExit();
 
         if (_shutdown is not null)
         {
@@ -99,6 +120,7 @@ public partial class App : Application
                 }
 
                 window.RestoreConfigurationWindow();
+                _desktopPet?.ShowPet();
             });
         }
     }

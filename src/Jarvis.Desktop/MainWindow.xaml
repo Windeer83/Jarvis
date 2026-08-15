@@ -298,7 +298,7 @@
                 </Border>
 
                 <GroupBox Header="手机闭环、复盘与 AI（T15–T20）" Padding="10" Margin="0,0,0,14">
-                    <TabControl>
+                    <TabControl x:Name="CompanionTabs">
                         <TabItem Header="自然语言 / AI">
                             <StackPanel Margin="10">
                                 <TextBlock Text="安排或修改工作（生成确认卡）" FontWeight="SemiBold" />

@@ -9,6 +9,29 @@ namespace Jarvis.Core.Tests;
 public sealed class CorePipeScenarios
 {
     [Fact]
+    public async Task Product_exit_is_an_explicit_core_owned_request()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(new DateTimeOffset(2026, 8, 15, 9, 0, 0, TimeSpan.FromHours(8)));
+        await using var module = await SupervisionModule.OpenAsync(
+            database.Path,
+            clock,
+            new FakeActivitySource(),
+            new FakeReminderSink());
+        var requested = false;
+        var handler = new CoreCommandHandler(
+            module,
+            productExitRequested: () => requested = true);
+
+        var response = await handler.HandleAsync(
+            new CoreRequest(CoreOperations.ExitProduct),
+            CancellationToken.None);
+
+        Assert.True(response.Success);
+        Assert.True(requested);
+    }
+
+    [Fact]
     public async Task Desktop_operations_round_trip_through_core_pipe_and_return_core_projection()
     {
         using var database = new TemporaryDatabase();

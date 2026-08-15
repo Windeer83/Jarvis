@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace Jarvis.Desktop;
@@ -24,6 +25,31 @@ public static class ForegroundPresentationDetector
         var monitorInfo = new MonitorInfo { Size = (uint)Marshal.SizeOf<MonitorInfo>() };
         return GetMonitorInfo(monitor, ref monitorInfo) &&
                CoversMonitor(windowBounds, monitorInfo.Monitor);
+    }
+
+    public static string? ForegroundProcessName()
+    {
+        var window = GetForegroundWindow();
+        if (window == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        GetWindowThreadProcessId(window, out var processId);
+        if (processId == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById((int)processId);
+            return process.ProcessName;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     public static bool CoversMonitor(NativeRect window, NativeRect monitor)
@@ -55,6 +81,9 @@ public static class ForegroundPresentationDetector
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetShellWindow();

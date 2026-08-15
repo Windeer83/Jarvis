@@ -8,7 +8,8 @@ namespace Jarvis.Core;
 internal sealed class CoreCommandHandler(
     SupervisionModule supervision,
     CompanionModule? companion = null,
-    Func<CancellationToken, Task<SupervisionSnapshot>>? projectionReader = null)
+    Func<CancellationToken, Task<SupervisionSnapshot>>? projectionReader = null,
+    Action? productExitRequested = null)
 {
     public CoreCommandHandler(
         SupervisionModule supervision,
@@ -304,6 +305,10 @@ internal sealed class CoreCommandHandler(
                         outcome.Message,
                         CompanionOutcome: outcome);
                 }
+
+            case CoreOperations.ExitProduct when productExitRequested is not null:
+                productExitRequested();
+                return new CoreResponse(true, Message: "Jarvis 正在完全退出。");
 
             default:
                 return Failure("invalid_request", "Core 无法识别这项操作或请求缺少必要内容。");

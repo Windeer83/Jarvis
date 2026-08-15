@@ -14,6 +14,7 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
     private readonly string? _configuredDesktopPath;
     private bool _tickRunning;
     private bool _disposed;
+    private int _exitRequested;
 
     public CoreApplicationContext(
         SupervisionModule supervision,
@@ -47,7 +48,7 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
 
         _pipeServer = new CorePipeServer(
             CoreProtocol.PipeName,
-            new CoreCommandHandler(_supervision, _companion));
+            new CoreCommandHandler(_supervision, _companion, productExitRequested: RequestProductExit));
         _pipeServer.Start();
 
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -75,6 +76,12 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
 
     private async void OnTimerTick(object? sender, EventArgs eventArgs)
     {
+        if (Interlocked.Exchange(ref _exitRequested, 0) == 1)
+        {
+            ExitThread();
+            return;
+        }
+
         if (_tickRunning)
         {
             return;
@@ -97,6 +104,8 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
             _tickRunning = false;
         }
     }
+
+    private void RequestProductExit() => Interlocked.Exchange(ref _exitRequested, 1);
 
     private async Task RefreshProjectionAsync()
     {

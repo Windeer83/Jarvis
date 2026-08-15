@@ -9,4 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Jarvis.Contracts\Jarvis.Contracts.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\Pet\*.png" />
+  </ItemGroup>
 </Project>
