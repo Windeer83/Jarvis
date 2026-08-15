@@ -189,6 +189,50 @@ public sealed class SupervisionBehaviorScenarios
                           correction.EffectiveFrom == Start.AddMinutes(5));
     }
 
+    [Fact]
+    public async Task Classifying_current_unknown_as_distracting_keeps_the_prior_continuous_deviation()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        var activity = new FakeActivitySource();
+        await using var module = await SupervisionModule.OpenAsync(
+            database.Path, clock, activity, new FakeReminderSink());
+        var commitment = await ConfirmComputerAsync(module, Start, "Excel.exe");
+
+        clock.Now = Start.AddMinutes(1);
+        Observe(activity, clock, "first-unknown.exe", active: true);
+        await module.TickAsync();
+        clock.Now = Start.AddMinutes(2);
+        Observe(activity, clock, "mystery.exe", active: true);
+        await module.TickAsync();
+        clock.Now = Start.AddMinutes(4);
+        Observe(activity, clock, "mystery.exe", active: true);
+        await module.TickAsync();
+        var before = (await module.GetSnapshotAsync()).ActiveSupervision!;
+
+        var corrected = await module.ClassifyActivityAsync(
+            commitment.Id,
+            commitment.Version,
+            before.ActionableTarget!,
+            before.ActivityStateStartedAt!.Value,
+            ActivityClassification.Distracting,
+            ActivityRuleScope.Commitment,
+            "这是分心软件");
+        Assert.True(corrected.Success, corrected.Message);
+        var immediatelyAfter = (await module.GetSnapshotAsync()).ActiveSupervision!;
+
+        clock.Now = Start.AddMinutes(5);
+        Observe(activity, clock, "mystery.exe", active: true);
+        await module.TickAsync();
+        var oneMinuteLater = (await module.GetSnapshotAsync()).ActiveSupervision!;
+
+        Assert.Equal(Start.AddMinutes(1), before.DeviationStartedAt);
+        Assert.Equal(TimeSpan.FromMinutes(3), before.CountedDeviation);
+        Assert.Equal(before.DeviationStartedAt, immediatelyAfter.DeviationStartedAt);
+        Assert.True(immediatelyAfter.CountedDeviation >= before.CountedDeviation);
+        Assert.Equal(TimeSpan.FromMinutes(4), oneMinuteLater.CountedDeviation);
+    }
+
     [Theory]
     [InlineData(ActivityRuleScope.Template)]
     [InlineData(ActivityRuleScope.Global)]

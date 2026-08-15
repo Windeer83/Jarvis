@@ -837,14 +837,18 @@ public sealed class SupervisionModule : IAsyncDisposable
             }
             else
             {
+                var hadContinuousDeviation = state.DeviationStartedAt is not null;
+                state = MaterializeDeviation(state, correctedAt);
                 state = state with
                 {
                     Classification = ActivityClassification.Distracting,
-                    DeviationStartedAt = correctionEffectiveFrom,
-                    CountedDeviation = _clock.Now > correctionEffectiveFrom
-                        ? _clock.Now - correctionEffectiveFrom
-                        : TimeSpan.Zero,
-                    DeviationCountingSince = _clock.Now,
+                    DeviationStartedAt = state.DeviationStartedAt ?? correctionEffectiveFrom,
+                    CountedDeviation = hadContinuousDeviation
+                        ? state.CountedDeviation
+                        : correctedAt > correctionEffectiveFrom
+                            ? correctedAt - correctionEffectiveFrom
+                            : TimeSpan.Zero,
+                    DeviationCountingSince = correctedAt,
                     DeviationReason = DeviationReason.DistractingActivity,
                     RelatedStableSince = null,
                     PendingPrompt = null
