@@ -118,6 +118,16 @@ public static class DesktopPetProjectionBuilder
                 foreground);
         }
 
+        if (companion?.BackupProjection.AttentionRequired == true)
+        {
+            return new(
+                DesktopPetVisualState.Caring,
+                overlay,
+                "本地备份等待网盘处理",
+                companion.BackupProjection.CloudStatus,
+                foreground);
+        }
+
         if (persona.CurrentPrompt is { } prompt &&
             (prompt.ExpiresAt is null || prompt.ExpiresAt > now))
         {

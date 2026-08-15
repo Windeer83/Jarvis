@@ -87,12 +87,12 @@ internal sealed partial class SqliteCommitmentStore
         var version = Convert.ToInt32(
             await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
-        if (version > 8)
+        if (version > 9)
         {
-            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 8。");
+            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 9。");
         }
 
-        if (version == 8)
+        if (version == 9)
         {
             return;
         }
@@ -124,7 +124,37 @@ internal sealed partial class SqliteCommitmentStore
         {
             await MigrateToVersionEightAsync(connection, migration, cancellationToken).ConfigureAwait(false);
         }
+        if (version < 9)
+        {
+            await MigrateToVersionNineAsync(connection, migration, cancellationToken).ConfigureAwait(false);
+        }
         await migration.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task MigrateToVersionNineAsync(
+        SqliteConnection connection,
+        SqliteTransaction migration,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteSchemaAsync(connection, migration, """
+            CREATE TABLE backup_settings (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                directory_path TEXT NULL,
+                last_success_at_utc TEXT NULL,
+                last_backup_path TEXT NULL,
+                last_validated_at_utc TEXT NULL,
+                last_baidu_client_seen_at_utc TEXT NULL,
+                client_waiting_since_at_utc TEXT NULL,
+                last_baidu_warning_at_utc TEXT NULL,
+                last_auto_attempt_at_utc TEXT NULL,
+                last_error TEXT NULL,
+                daily_retention INTEGER NOT NULL DEFAULT 30,
+                monthly_retention INTEGER NOT NULL DEFAULT 12,
+                upgrade_retention INTEGER NOT NULL DEFAULT 3
+            );
+            INSERT INTO backup_settings(singleton) VALUES(1);
+            PRAGMA user_version = 9;
+            """, cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task MigrateToVersionEightAsync(

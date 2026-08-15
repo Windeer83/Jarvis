@@ -34,6 +34,7 @@ internal static class Program
         CompanionModule? companion = null;
         try
         {
+            PendingRestoreCoordinator.ApplyIfPendingAsync(dataDirectory).GetAwaiter().GetResult();
             var databasePath = Path.Combine(dataDirectory, "jarvis.db");
             supervision = SupervisionModule.OpenAsync(
                     databasePath,
@@ -48,7 +49,9 @@ internal static class Program
                     clock,
                     new LarkCliWorktimeChannel(),
                     new SiliconFlowCloudAiProvider(),
-                    new WindowsAiCredentialStore())
+                    new WindowsCredentialStore("Jarvis/AI/"),
+                    new WindowsBackupPasswordStore(),
+                    new WindowsBaiduClientProbe())
                 .GetAwaiter()
                 .GetResult();
 

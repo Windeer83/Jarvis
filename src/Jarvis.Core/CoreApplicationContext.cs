@@ -110,6 +110,7 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
     private async Task RefreshProjectionAsync()
     {
         var snapshot = await _supervision.GetSnapshotAsync();
+        var companion = await _companion.SnapshotAsync();
         var activeComputer = snapshot.Commitments.SingleOrDefault(commitment =>
             commitment.Id == snapshot.ActiveComputerCommitmentId);
         var activeOffline = snapshot.Commitments.FirstOrDefault(commitment =>
@@ -131,6 +132,10 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
         if (_pipeServer.FatalError is not null)
         {
             status = "桌面连接已停止：需重启 Jarvis Core（核心监督继续）";
+        }
+        else if (companion.BackupProjection.AttentionRequired)
+        {
+            status += " · 本地备份等待百度网盘客户端处理（云端状态未知）";
         }
 
         _statusItem.Text = status;

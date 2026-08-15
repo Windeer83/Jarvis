@@ -131,3 +131,15 @@ internal interface IAiCredentialStore
     ValueTask<string?> ReadAsync(string provider, CancellationToken cancellationToken);
     ValueTask DeleteAsync(string provider, CancellationToken cancellationToken);
 }
+
+internal interface IBackupPasswordStore
+{
+    ValueTask SaveAsync(string password, CancellationToken cancellationToken);
+    ValueTask<string?> ReadAsync(CancellationToken cancellationToken);
+    ValueTask DeleteAsync(CancellationToken cancellationToken);
+}
+
+internal interface IBaiduClientProbe
+{
+    bool IsRunning();
+}

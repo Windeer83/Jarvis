@@ -98,17 +98,20 @@ New-Item -ItemType Directory -Path $fakeRuntimeRoot | Out-Null
 $dotnetRootWasSet = Test-Path Env:DOTNET_ROOT
 $dotnetRootX64WasSet = Test-Path Env:DOTNET_ROOT_X64
 $dotnetDisableGuiErrorsWasSet = Test-Path Env:DOTNET_DISABLE_GUI_ERRORS
+$instanceScopeWasSet = Test-Path Env:JARVIS_INSTANCE_SCOPE
 $originalDotnetRoot = $env:DOTNET_ROOT
 $originalDotnetRootX64 = $env:DOTNET_ROOT_X64
 $originalDotnetDisableGuiErrors = $env:DOTNET_DISABLE_GUI_ERRORS
+$originalInstanceScope = $env:JARVIS_INSTANCE_SCOPE
 $env:DOTNET_ROOT = $fakeRuntimeRoot
 $env:DOTNET_ROOT_X64 = $fakeRuntimeRoot
 $env:DOTNET_DISABLE_GUI_ERRORS = "1"
+$env:JARVIS_INSTANCE_SCOPE = "smoke_" + [Guid]::NewGuid().ToString("N")
 $safeUser = -join ([Environment]::UserName.ToCharArray() | ForEach-Object {
     if ([char]::IsLetterOrDigit($_)) { $_ } else { "_" }
 })
 $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
-$pipeName = "Jarvis.Core.$safeUser.$sessionId"
+$pipeName = "Jarvis.Core.$safeUser.$sessionId.$($env:JARVIS_INSTANCE_SCOPE)"
 $coreProcess = $null
 $restartedCore = $null
 $secondDesktop = $null
@@ -282,6 +285,13 @@ finally {
     }
     else {
         Remove-Item Env:DOTNET_DISABLE_GUI_ERRORS -ErrorAction SilentlyContinue
+    }
+
+    if ($instanceScopeWasSet) {
+        $env:JARVIS_INSTANCE_SCOPE = $originalInstanceScope
+    }
+    else {
+        Remove-Item Env:JARVIS_INSTANCE_SCOPE -ErrorAction SilentlyContinue
     }
 }
 

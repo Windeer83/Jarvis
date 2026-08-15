@@ -471,7 +471,14 @@ public static class CoreProtocol
         {
             var user = string.Concat(Environment.UserName.Select(character =>
                 char.IsLetterOrDigit(character) ? character : '_'));
-            return $"Jarvis.Core.{user}.{Process.GetCurrentProcess().SessionId}";
+            var requestedScope = Environment.GetEnvironmentVariable("JARVIS_INSTANCE_SCOPE");
+            var scope = string.IsNullOrWhiteSpace(requestedScope)
+                ? null
+                : string.Concat(requestedScope
+                    .Where(character => char.IsLetterOrDigit(character) || character is '_' or '-')
+                    .Take(48));
+            return $"Jarvis.Core.{user}.{Process.GetCurrentProcess().SessionId}" +
+                   (string.IsNullOrEmpty(scope) ? "" : $".{scope}");
         }
     }
 

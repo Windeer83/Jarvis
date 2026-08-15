@@ -1516,12 +1516,12 @@ public partial class MainWindow : Window
                     break;
                 case VoiceInputTarget.CommitmentReview:
                     CommitmentReviewTextBox.Text = text;
-                    CompanionTabs.SelectedIndex = 5;
+                    CompanionTabs.SelectedIndex = 6;
                     VoiceStatusText.Text = "转写已填入承诺回顾；请核对完成判断后点击“提交回顾”。";
                     break;
                 case VoiceInputTarget.DailyReview:
                     DailyReviewAnswerBox.Text = text;
-                    CompanionTabs.SelectedIndex = 5;
+                    CompanionTabs.SelectedIndex = 6;
                     VoiceStatusText.Text = "转写已填入每日复盘回答；请核对后点击“回答并进入下一问”。";
                     break;
             }
@@ -1755,6 +1755,113 @@ public partial class MainWindow : Window
             $"详细事实 {range.Timeline.Count} 条 · 承诺/回顾 {range.Commitments.Count} 条" +
             (range.IsTruncated ? " · 时间线过长，当前只显示前 5000 条" : "") +
             $"\n{summaries}";
+    }
+
+    private void ChooseBackupDirectoryButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "选择已由百度网盘客户端同步的 Jarvis 专用目录",
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) == true) BackupDirectoryBox.Text = dialog.FolderName;
+    }
+
+    private async void ConfigureBackupButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var directory = BackupDirectoryBox.Text.Trim();
+        if (directory.Length == 0)
+        {
+            SetOperationStatus("请先选择百度网盘客户端负责同步的专用子目录。", isError: true);
+            return;
+        }
+        var outcome = await SendCompanionAsync(new ConfigureBackupCommand(
+            directory, BackupPasswordBox.Password, BackupConfirmPasswordBox.Password,
+            SaveBackupPasswordBox.IsChecked == true));
+        if (outcome?.Success == true)
+        {
+            BackupPasswordBox.Clear();
+            BackupConfirmPasswordBox.Clear();
+        }
+    }
+
+    private async void CreateManualBackupButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var password = BackupPasswordBox.Password;
+        var outcome = await SendCompanionAsync(new CreateBackupCommand(
+            BackupKind.Manual, string.IsNullOrEmpty(password) ? null : password));
+        ShowBackupOperation(outcome?.BackupOperation);
+        if (outcome?.Success == true) BackupPasswordBox.Clear();
+    }
+
+    private async void ForgetBackupPasswordButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (MessageBox.Show(
+                "删除后自动备份无法继续，直到你重新保存密码。\n旧备份仍需原密码。",
+                "删除本机备份密码", MessageBoxButton.YesNo,
+                MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        await SendCompanionAsync(new ForgetBackupPasswordCommand());
+    }
+
+    private void ChooseRestoreBackupButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择 Jarvis 密码保护备份",
+            Filter = "Jarvis 备份 (*.jarvis-backup)|*.jarvis-backup",
+            Multiselect = false,
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog(this) == true) RestoreBackupPathBox.Text = dialog.FileName;
+    }
+
+    private async void TestBackupRestoreButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!TryReadRestoreInput(out var path, out var password)) return;
+        var outcome = await SendCompanionAsync(new TestBackupRestoreCommand(path, password));
+        ShowBackupOperation(outcome?.BackupOperation);
+        RestoreBackupPasswordBox.Clear();
+    }
+
+    private async void ScheduleBackupRestoreButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!TryReadRestoreInput(out var path, out var password)) return;
+        if (MessageBox.Show(
+                "Jarvis 会先完整校验备份，然后排队。\n" +
+                "当前运行中的数据不会立即覆盖；完全退出并重新打开后才恢复。\n" +
+                "供应商凭据需在新电脑重新配置。",
+                "确认排队恢复", MessageBoxButton.YesNo,
+                MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        var outcome = await SendCompanionAsync(new ScheduleBackupRestoreCommand(path, password));
+        ShowBackupOperation(outcome?.BackupOperation);
+        RestoreBackupPasswordBox.Clear();
+    }
+
+    private bool TryReadRestoreInput(out string path, out string password)
+    {
+        path = RestoreBackupPathBox.Text.Trim();
+        password = RestoreBackupPasswordBox.Password;
+        if (path.Length == 0 || !File.Exists(path))
+        {
+            SetOperationStatus("请选择存在的 .jarvis-backup 文件。", isError: true);
+            return false;
+        }
+        if (password.Length < 12)
+        {
+            SetOperationStatus("请输入该备份原来使用的至少 12 字符密码。", isError: true);
+            return false;
+        }
+        return true;
+    }
+
+    private void ShowBackupOperation(BackupOperationView? operation)
+    {
+        if (operation is null) return;
+        BackupOperationText.Text =
+            $"{operation.Message}" +
+            (operation.BackupPath is null ? "" : $"\n文件：{operation.BackupPath}") +
+            (operation.DatabaseVersion is null ? "" : $"\n数据库 v{operation.DatabaseVersion} · 完整性已校验") +
+            (operation.RestoreScheduled ? "\n请完全退出 Jarvis，然后重新打开。" : "");
     }
 
     private CompanionPersonaSettingsView ReadPersonaSettingsFromForm() => new(
@@ -2158,6 +2265,19 @@ public partial class MainWindow : Window
             : $"当前保留 {governance.DetailedTimelineRetentionDays} 天 · " +
               $"上次清理 {governance.LastRetentionAppliedAt.Value.ToLocalTime():yyyy-MM-dd HH:mm}";
 
+        var backup = snapshot.BackupProjection;
+        if (!BackupDirectoryBox.IsKeyboardFocusWithin && !string.IsNullOrWhiteSpace(backup.DirectoryPath))
+            BackupDirectoryBox.Text = backup.DirectoryPath;
+        if (!SaveBackupPasswordBox.IsKeyboardFocusWithin)
+            SaveBackupPasswordBox.IsChecked = backup.PasswordStored;
+        BackupStatusText.Text = backup.DirectoryPath is null
+            ? "备份尚未配置。请选择百度网盘客户端同步的专用子目录。"
+            : $"最近备份：{(backup.LastSuccessfulBackupAt is null ? "尚无" : backup.LastSuccessfulBackupAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture))}" +
+              $" · 密码：{(backup.PasswordStored ? "已保存到 Windows 凭据管理器" : "未保存")}" +
+              $" · 保留：每日 {backup.DailyRetention} / 每月 {backup.MonthlyRetention} / 升级前 {backup.UpgradeRetention}\n" +
+              backup.CloudStatus +
+              (string.IsNullOrWhiteSpace(backup.LastError) ? "" : $"\n最近错误：{backup.LastError}");
+
         var channel = snapshot.WorktimeChannel;
         WorktimeEnabledBox.IsChecked = channel.Enabled;
         DetailedPreviewBox.IsChecked = channel.PreviewMode == NotificationPreviewMode.Detailed;
@@ -2283,6 +2403,8 @@ public partial class MainWindow : Window
         AiTrialEvidenceText.Text = "Core 未连接";
         AiReviewHistoryText.Text = "Core 未连接";
         RetentionStatusText.Text = "Core 未连接";
+        BackupStatusText.Text = "Core 未连接";
+        BackupOperationText.Text = "Core 未连接";
         DataRangeSummaryText.Text = "Core 未连接";
         DataTimelineGrid.ItemsSource = null;
         _dataDeletionCandidate = null;

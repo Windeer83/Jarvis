@@ -387,7 +387,8 @@ public sealed record CompanionSnapshot(
     IReadOnlyList<AiReviewDraftView>? AiReviewDraftHistory = null,
     AiTrialEvidenceView? TrialEvidence = null,
     CompanionPersonaView? Persona = null,
-    DataGovernanceStatusView? DataGovernance = null)
+    DataGovernanceStatusView? DataGovernance = null,
+    BackupStatusView? Backup = null)
 {
     [JsonIgnore]
     public IReadOnlyList<AiReviewDraftView> ConfirmedAiReviewDrafts => AiReviewDraftHistory ?? [];
@@ -401,6 +402,9 @@ public sealed record CompanionSnapshot(
     [JsonIgnore]
     public DataGovernanceStatusView DataGovernanceProjection =>
         DataGovernance ?? DataGovernanceStatusView.Default;
+
+    [JsonIgnore]
+    public BackupStatusView BackupProjection => Backup ?? BackupStatusView.NotConfigured;
 
     public static CompanionSnapshot Empty { get; } = new(
         new(false, false, false, null, null, null),
@@ -456,6 +460,11 @@ public sealed record CompanionSnapshot(
 [JsonDerivedType(typeof(ExportDataRangeCommand), "exportDataRange")]
 [JsonDerivedType(typeof(PreparePermanentDataDeletionCommand), "preparePermanentDataDeletion")]
 [JsonDerivedType(typeof(ConfirmPermanentDataDeletionCommand), "confirmPermanentDataDeletion")]
+[JsonDerivedType(typeof(ConfigureBackupCommand), "configureBackup")]
+[JsonDerivedType(typeof(ForgetBackupPasswordCommand), "forgetBackupPassword")]
+[JsonDerivedType(typeof(CreateBackupCommand), "createBackup")]
+[JsonDerivedType(typeof(TestBackupRestoreCommand), "testBackupRestore")]
+[JsonDerivedType(typeof(ScheduleBackupRestoreCommand), "scheduleBackupRestore")]
 public abstract record CompanionCommand;
 
 public sealed record ConfigureWorktimeChannelCommand(
@@ -598,4 +607,5 @@ public sealed record CompanionOutcome(
     string? AssistantText = null,
     IReadOnlyList<string>? MissingInformation = null,
     DataRangeView? DataRange = null,
-    DataDeletionCard? DataDeletion = null);
+    DataDeletionCard? DataDeletion = null,
+    BackupOperationView? BackupOperation = null);

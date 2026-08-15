@@ -11,13 +11,13 @@ using Jarvis.Contracts;
 
 namespace Jarvis.Core;
 
-internal sealed class WindowsAiCredentialStore : IAiCredentialStore
+internal sealed class WindowsCredentialStore(string targetPrefix) : IAiCredentialStore
 {
     private const uint CredTypeGeneric = 1;
     private const uint CredPersistLocalMachine = 2;
     private const int ErrorNotFound = 1168;
     private const int MaxCredentialBlobSize = 5 * 512;
-    private const string TargetPrefix = "Jarvis/AI/";
+    private readonly string _targetPrefix = targetPrefix;
 
     public ValueTask SaveAsync(string provider, string secret, CancellationToken cancellationToken)
     {
@@ -31,7 +31,7 @@ internal sealed class WindowsAiCredentialStore : IAiCredentialStore
             var credential = new NativeCredential
             {
                 Type = CredTypeGeneric,
-                TargetName = TargetPrefix + provider,
+                TargetName = _targetPrefix + provider,
                 CredentialBlobSize = checked((uint)bytes.Length),
                 CredentialBlob = handle.AddrOfPinnedObject(),
                 Persist = CredPersistLocalMachine,
@@ -52,7 +52,7 @@ internal sealed class WindowsAiCredentialStore : IAiCredentialStore
     public ValueTask<string?> ReadAsync(string provider, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!CredReadW(TargetPrefix + provider, CredTypeGeneric, 0, out var pointer))
+        if (!CredReadW(_targetPrefix + provider, CredTypeGeneric, 0, out var pointer))
         {
             var error = Marshal.GetLastPInvokeError();
             if (error == ErrorNotFound) return ValueTask.FromResult<string?>(null);
@@ -82,7 +82,7 @@ internal sealed class WindowsAiCredentialStore : IAiCredentialStore
     public ValueTask DeleteAsync(string provider, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!CredDeleteW(TargetPrefix + provider, CredTypeGeneric, 0))
+        if (!CredDeleteW(_targetPrefix + provider, CredTypeGeneric, 0))
         {
             var error = Marshal.GetLastPInvokeError();
             if (error != ErrorNotFound) throw new Win32Exception(error);
@@ -122,6 +122,53 @@ internal sealed class WindowsAiCredentialStore : IAiCredentialStore
 
     [DllImport("Advapi32.dll")]
     private static extern void CredFree(IntPtr buffer);
+}
+
+internal sealed class WindowsBackupPasswordStore : IBackupPasswordStore
+{
+    private const string PasswordKey = "password";
+    private readonly WindowsCredentialStore _store = new("Jarvis/Backup/");
+
+    public ValueTask SaveAsync(string password, CancellationToken cancellationToken) =>
+        _store.SaveAsync(PasswordKey, password, cancellationToken);
+
+    public ValueTask<string?> ReadAsync(CancellationToken cancellationToken) =>
+        _store.ReadAsync(PasswordKey, cancellationToken);
+
+    public ValueTask DeleteAsync(CancellationToken cancellationToken) =>
+        _store.DeleteAsync(PasswordKey, cancellationToken);
+}
+
+internal sealed class WindowsBaiduClientProbe : IBaiduClientProbe
+{
+    private static readonly string[] ProcessNames =
+    [
+        "BaiduNetdisk", "BaiduNetdiskHost", "baidunetdisk", "YunDetectService"
+    ];
+
+    public bool IsRunning()
+    {
+        try
+        {
+            foreach (var name in ProcessNames)
+            {
+                var processes = System.Diagnostics.Process.GetProcessesByName(name);
+                try
+                {
+                    if (processes.Length > 0) return true;
+                }
+                finally
+                {
+                    foreach (var process in processes) process.Dispose();
+                }
+            }
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+        }
+        return false;
+    }
 }
 
 internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) : ICloudAiProvider, IDisposable

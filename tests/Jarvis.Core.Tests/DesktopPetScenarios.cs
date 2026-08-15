@@ -112,6 +112,27 @@ public sealed class DesktopPetScenarios
     }
 
     [Fact]
+    public void Verified_local_backup_waiting_for_client_is_a_caring_local_only_notice()
+    {
+        var now = DateTimeOffset.Parse("2026-08-15T08:00:00Z");
+        var supervision = new SupervisionSnapshot(now, null, [], null, null);
+        var companion = CompanionSnapshot.Empty with
+        {
+            Backup = new BackupStatusView(
+                @"D:\BaiduSync\Jarvis", true, now.AddDays(-1),
+                @"D:\BaiduSync\Jarvis\jarvis-daily.jarvis-backup", now.AddDays(-1),
+                false, "本地备份已验证，但百度网盘客户端连续 24 小时未运行；云端状态未知。",
+                true, null)
+        };
+
+        var projection = DesktopPetProjectionBuilder.Build(supervision, companion, now);
+
+        Assert.Equal(DesktopPetVisualState.Caring, projection.VisualState);
+        Assert.Contains("本地备份", projection.Status);
+        Assert.Contains("云端状态未知", projection.Detail);
+    }
+
+    [Fact]
     public void Position_snap_stays_inside_the_current_monitor()
     {
         Assert.Equal(

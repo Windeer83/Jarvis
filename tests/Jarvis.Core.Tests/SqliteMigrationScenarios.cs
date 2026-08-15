@@ -82,7 +82,7 @@ public sealed class SqliteMigrationScenarios
         await connection.OpenAsync();
         await using var version = connection.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
-        Assert.Equal(8L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal(9L, (long)(await version.ExecuteScalarAsync())!);
         await using var planningTables = connection.CreateCommand();
         planningTables.CommandText = """
             SELECT count(*)
@@ -128,7 +128,7 @@ public sealed class SqliteMigrationScenarios
             await AssertVersionThreeDataWasBackfilledAsync(module);
         }
 
-        await AssertUserVersionAsync(database.Path, 8);
+        await AssertUserVersionAsync(database.Path, 9);
 
         await using (var reopened = await SupervisionModule.OpenAsync(
                          database.Path, clock, new FakeActivitySource(), new FakeReminderSink()))
@@ -136,7 +136,7 @@ public sealed class SqliteMigrationScenarios
             await AssertVersionThreeDataWasBackfilledAsync(reopened);
         }
 
-        await AssertUserVersionAsync(database.Path, 8);
+        await AssertUserVersionAsync(database.Path, 9);
     }
 
     [Fact]
@@ -177,7 +177,7 @@ public sealed class SqliteMigrationScenarios
         var companionStore = new SqliteCompanionStore(database.Path);
         var migrated = Assert.Single(await companionStore.ReadMobileCardsAsync(CancellationToken.None));
         Assert.Equal(TimeSpan.FromMinutes(20), migrated.CountedDeviation);
-        await AssertUserVersionAsync(database.Path, 8);
+        await AssertUserVersionAsync(database.Path, 9);
     }
 
     [Fact]
@@ -188,7 +188,7 @@ public sealed class SqliteMigrationScenarios
 
         var store = new SqliteCommitmentStore(database.Path);
         await store.InitializeAsync(CancellationToken.None);
-        await AssertUserVersionAsync(database.Path, 8);
+        await AssertUserVersionAsync(database.Path, 9);
 
         await using (var connection = new SqliteConnection($"Data Source={database.Path};Pooling=False"))
         {
@@ -206,7 +206,7 @@ public sealed class SqliteMigrationScenarios
         }
 
         await store.InitializeAsync(CancellationToken.None);
-        await AssertUserVersionAsync(database.Path, 8);
+        await AssertUserVersionAsync(database.Path, 9);
     }
 
     [Fact]
@@ -244,7 +244,7 @@ public sealed class SqliteMigrationScenarios
 
         var store = new SqliteCommitmentStore(database.Path);
         await store.InitializeAsync(CancellationToken.None);
-        await AssertUserVersionAsync(database.Path, 8);
+        await AssertUserVersionAsync(database.Path, 9);
 
         await using (var connection = new SqliteConnection($"Data Source={database.Path};Pooling=False"))
         {
@@ -262,7 +262,7 @@ public sealed class SqliteMigrationScenarios
         }
 
         await store.InitializeAsync(CancellationToken.None);
-        await AssertUserVersionAsync(database.Path, 8);
+        await AssertUserVersionAsync(database.Path, 9);
     }
 
     [Fact]
@@ -286,6 +286,59 @@ public sealed class SqliteMigrationScenarios
         Assert.Equal(0L, (long)(await settings.ExecuteScalarAsync())!);
         await using var conflict = connection.CreateCommand();
         conflict.CommandText = "SELECT count(*) FROM pragma_table_info('daily_activity_summaries') WHERE name='preexisting';";
+        Assert.Equal(1L, (long)(await conflict.ExecuteScalarAsync())!);
+    }
+
+    [Fact]
+    public async Task Version_eight_database_adds_backup_settings_and_reopens_idempotently()
+    {
+        using var database = new TemporaryDatabase();
+        await CreateVersionEightDatabaseAsync(database.Path);
+
+        var store = new SqliteCommitmentStore(database.Path);
+        await store.InitializeAsync(CancellationToken.None);
+        await AssertUserVersionAsync(database.Path, 9);
+
+        await using (var connection = new SqliteConnection($"Data Source={database.Path};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using var settings = connection.CreateCommand();
+            settings.CommandText = """
+                SELECT directory_path,last_auto_attempt_at_utc,daily_retention,
+                       monthly_retention,upgrade_retention
+                  FROM backup_settings WHERE singleton=1;
+                """;
+            await using var reader = await settings.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.True(reader.IsDBNull(0));
+            Assert.True(reader.IsDBNull(1));
+            Assert.Equal(30, reader.GetInt32(2));
+            Assert.Equal(12, reader.GetInt32(3));
+            Assert.Equal(3, reader.GetInt32(4));
+        }
+
+        await store.InitializeAsync(CancellationToken.None);
+        await AssertUserVersionAsync(database.Path, 9);
+    }
+
+    [Fact]
+    public async Task Failed_version_nine_migration_rolls_back_backup_settings_and_user_version()
+    {
+        using var database = new TemporaryDatabase();
+        await CreateVersionEightDatabaseAsync(database.Path, createBackupSettingsConflict: true);
+        await using var connection = new SqliteConnection($"Data Source={database.Path};Pooling=False");
+        await connection.OpenAsync();
+        await using var migration = (SqliteTransaction)await connection.BeginTransactionAsync();
+
+        await Assert.ThrowsAsync<SqliteException>(() => SqliteCommitmentStore.MigrateToVersionNineAsync(
+            connection, migration, CancellationToken.None));
+        await migration.RollbackAsync();
+
+        await using var version = connection.CreateCommand();
+        version.CommandText = "PRAGMA user_version;";
+        Assert.Equal(8L, (long)(await version.ExecuteScalarAsync())!);
+        await using var conflict = connection.CreateCommand();
+        conflict.CommandText = "SELECT count(*) FROM pragma_table_info('backup_settings') WHERE name='preexisting';";
         Assert.Equal(1L, (long)(await conflict.ExecuteScalarAsync())!);
     }
 
@@ -672,6 +725,28 @@ public sealed class SqliteMigrationScenarios
         {
             await using var conflict = connection.CreateCommand();
             conflict.CommandText = "CREATE TABLE daily_activity_summaries(preexisting TEXT);";
+            await conflict.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static async Task CreateVersionEightDatabaseAsync(
+        string path,
+        bool createBackupSettingsConflict = false)
+    {
+        await CreateVersionSevenDatabaseAsync(path);
+        await using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        await connection.OpenAsync();
+        await using (var migration = (SqliteTransaction)await connection.BeginTransactionAsync())
+        {
+            await SqliteCommitmentStore.MigrateToVersionEightAsync(
+                connection, migration, CancellationToken.None);
+            await migration.CommitAsync();
+        }
+
+        if (createBackupSettingsConflict)
+        {
+            await using var conflict = connection.CreateCommand();
+            conflict.CommandText = "CREATE TABLE backup_settings(preexisting TEXT);";
             await conflict.ExecuteNonQueryAsync();
         }
     }

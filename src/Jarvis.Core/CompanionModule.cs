@@ -2,7 +2,9 @@ using System.Globalization;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using ICSharpCode.SharpZipLib.Zip;
 using Jarvis.Contracts;
+using Microsoft.Data.Sqlite;
 
 namespace Jarvis.Core;
 
@@ -17,6 +19,7 @@ internal sealed class CompanionModule : IAsyncDisposable
     private readonly ICloudAiProvider _aiProvider;
     private readonly IAiCredentialStore _credentialStore;
     private readonly DataGovernanceService _dataGovernance;
+    private readonly BackupService _backupService;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _listenerReady;
     private string? _worktimeError;
@@ -32,7 +35,8 @@ internal sealed class CompanionModule : IAsyncDisposable
         IWorktimeChannel worktimeChannel,
         ICloudAiProvider aiProvider,
         IAiCredentialStore credentialStore,
-        DataGovernanceService dataGovernance)
+        DataGovernanceService dataGovernance,
+        BackupService backupService)
     {
         _store = store;
         _supervision = supervision;
@@ -41,6 +45,7 @@ internal sealed class CompanionModule : IAsyncDisposable
         _aiProvider = aiProvider;
         _credentialStore = credentialStore;
         _dataGovernance = dataGovernance;
+        _backupService = backupService;
     }
 
     public static async Task<CompanionModule> OpenAsync(
@@ -50,6 +55,8 @@ internal sealed class CompanionModule : IAsyncDisposable
         IWorktimeChannel worktimeChannel,
         ICloudAiProvider aiProvider,
         IAiCredentialStore credentialStore,
+        IBackupPasswordStore? backupPasswordStore = null,
+        IBaiduClientProbe? baiduClientProbe = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
@@ -60,7 +67,11 @@ internal sealed class CompanionModule : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(credentialStore);
         var module = new CompanionModule(
             new SqliteCompanionStore(databasePath), supervision, clock, worktimeChannel,
-            aiProvider, credentialStore, new DataGovernanceService(databasePath));
+            aiProvider, credentialStore, new DataGovernanceService(databasePath),
+            new BackupService(
+                databasePath,
+                backupPasswordStore ?? new NullBackupPasswordStore(),
+                baiduClientProbe ?? new NullBaiduClientProbe()));
         var dailyConfiguration = await module._store.ReadDailyConfigurationAsync(cancellationToken)
             .ConfigureAwait(false);
         if (dailyConfiguration.ConfiguredAt is null)
@@ -155,6 +166,11 @@ internal sealed class CompanionModule : IAsyncDisposable
                     await PreparePermanentDataDeletionAsync(value, cancellationToken),
                 ConfirmPermanentDataDeletionCommand value =>
                     await ConfirmPermanentDataDeletionAsync(value, cancellationToken),
+                ConfigureBackupCommand value => await ConfigureBackupAsync(value, cancellationToken),
+                ForgetBackupPasswordCommand => await ForgetBackupPasswordAsync(cancellationToken),
+                CreateBackupCommand value => await CreateBackupAsync(value, cancellationToken),
+                TestBackupRestoreCommand value => await TestBackupRestoreAsync(value, cancellationToken),
+                ScheduleBackupRestoreCommand value => await ScheduleBackupRestoreAsync(value, cancellationToken),
                 _ => Fail("companion_command_unknown", "Core 无法识别这项助手操作。")
             };
             if (worktimeEventId is not null)
@@ -206,6 +222,7 @@ internal sealed class CompanionModule : IAsyncDisposable
             await AdvanceCycleReviewAsync(cancellationToken).ConfigureAwait(false);
             await AdvanceProactiveCompanionAsync(supervision, cancellationToken).ConfigureAwait(false);
             await _dataGovernance.ApplyRetentionIfDueAsync(_clock.Now, cancellationToken).ConfigureAwait(false);
+            await _backupService.AdvanceAsync(_clock.Now, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -253,7 +270,8 @@ internal sealed class CompanionModule : IAsyncDisposable
             await _store.ReadConfirmedAiReviewDraftsAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadAiTrialEvidenceAsync(_clock.Now, cancellationToken).ConfigureAwait(false),
             Persona: ToPersonaView(personaState),
-            DataGovernance: await _dataGovernance.ReadStatusAsync(cancellationToken).ConfigureAwait(false));
+            DataGovernance: await _dataGovernance.ReadStatusAsync(cancellationToken).ConfigureAwait(false),
+            Backup: await _backupService.ReadStatusAsync(_clock.Now, cancellationToken).ConfigureAwait(false));
     }
 
     public async ValueTask DisposeAsync()
@@ -1273,6 +1291,115 @@ internal sealed class CompanionModule : IAsyncDisposable
         catch (InvalidOperationException exception)
         {
             return Fail("data_deletion_stale_or_unconfirmed", exception.Message);
+        }
+    }
+
+    private async Task<CompanionOutcome> ConfigureBackupAsync(
+        ConfigureBackupCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _backupService.ConfigureAsync(
+                command.DirectoryPath, command.Password, command.ConfirmPassword,
+                command.SavePassword, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return Fail("backup_configuration_invalid", exception.Message);
+        }
+        return await BackupSuccessAsync(
+            command.SavePassword
+                ? "备份目录已配置；密码已保存到当前电脑的 Windows 凭据管理器。"
+                : "备份目录已配置；密码没有保存，自动备份前仍需输入。",
+            null, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<CompanionOutcome> ForgetBackupPasswordAsync(CancellationToken cancellationToken)
+    {
+        await _backupService.ForgetPasswordAsync(cancellationToken).ConfigureAwait(false);
+        return await BackupSuccessAsync(
+            "当前电脑保存的备份密码已删除；旧备份仍需要原密码。",
+            null, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<CompanionOutcome> CreateBackupAsync(
+        CreateBackupCommand command,
+        CancellationToken cancellationToken)
+    {
+        BackupOperationView result;
+        try
+        {
+            result = await _backupService.CreateAsync(
+                command.Kind, command.Password, _clock.Now, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidOperationException or InvalidDataException or
+                IOException or UnauthorizedAccessException or ZipException or SqliteException)
+        {
+            return Fail("backup_create_failed", exception.Message);
+        }
+        return await BackupSuccessAsync(result.Message, result, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<CompanionOutcome> TestBackupRestoreAsync(
+        TestBackupRestoreCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _backupService.TestRestoreAsync(
+                command.BackupPath, command.Password, cancellationToken).ConfigureAwait(false);
+            return new(true, Message: result.Message, Snapshot: await SnapshotAsync(cancellationToken),
+                BackupOperation: result);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidOperationException or InvalidDataException or
+                IOException or UnauthorizedAccessException or ZipException or SqliteException or CryptographicException)
+        {
+            return Fail("backup_restore_test_failed", exception.Message);
+        }
+    }
+
+    private async Task<CompanionOutcome> ScheduleBackupRestoreAsync(
+        ScheduleBackupRestoreCommand command,
+        CancellationToken cancellationToken)
+    {
+        BackupOperationView result;
+        try
+        {
+            result = await _backupService.ScheduleRestoreAsync(
+                command.BackupPath, command.Password, _clock.Now, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidOperationException or InvalidDataException or
+                IOException or UnauthorizedAccessException or ZipException or SqliteException or CryptographicException)
+        {
+            return Fail("backup_restore_schedule_failed", exception.Message);
+        }
+        return await BackupSuccessAsync(result.Message, result, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<CompanionOutcome> BackupSuccessAsync(
+        string message,
+        BackupOperationView? operation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return new(true, Message: message, Snapshot: await SnapshotAsync(cancellationToken),
+                BackupOperation: operation);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return new(true,
+                Message: message + " 正式操作已成功，但当前状态暂时无法刷新，请稍后刷新。",
+                BackupOperation: operation);
         }
     }
 
