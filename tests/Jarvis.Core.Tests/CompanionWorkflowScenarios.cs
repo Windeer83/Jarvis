@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Net;
 using System.Net.Http;
 using System.Diagnostics;
+using System.Globalization;
 using Jarvis.Contracts;
 using Microsoft.Data.Sqlite;
 using Xunit;
@@ -666,6 +667,62 @@ public sealed class CompanionWorkflowScenarios
             json.Contains($"\"action\":\"{action}\"", StringComparison.Ordinal)));
         Assert.Contains("\"rest_minutes\":15", json, StringComparison.Ordinal);
         Assert.DoesNotContain("corner_radius", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Feishu_card_callback_does_not_convert_untrusted_timestamp_into_a_rest_end_time()
+    {
+        var cardId = Guid.NewGuid();
+        var commitmentId = Guid.NewGuid();
+        var action = JsonSerializer.Serialize(new
+        {
+            card_id = cardId,
+            commitment_id = commitmentId,
+            version = 2,
+            action = WorktimeActionKind.StartRest.ToString(),
+            rest_minutes = 15
+        });
+        var line = JsonSerializer.Serialize(new
+        {
+            event_id = "event-rest",
+            operator_id = "ou_user",
+            timestamp = long.MaxValue.ToString(CultureInfo.InvariantCulture),
+            token = "callback-token",
+            action_value = action
+        });
+
+        var inbound = Assert.IsType<WorktimeActionInboundEvent>(
+            LarkCliWorktimeChannel.ParseInbound("card.action.trigger", line));
+
+        Assert.Equal(cardId, inbound.CardId);
+        Assert.Equal(commitmentId, inbound.CommitmentId);
+        Assert.Equal(15, inbound.RestMinutes);
+    }
+
+    [Fact]
+    public void Feishu_card_callback_rejects_an_out_of_range_rest_duration_without_throwing()
+    {
+        var action = JsonSerializer.Serialize(new
+        {
+            card_id = Guid.NewGuid(),
+            commitment_id = Guid.NewGuid(),
+            version = 1,
+            action = WorktimeActionKind.StartRest.ToString(),
+            rest_minutes = int.MaxValue
+        });
+        var line = JsonSerializer.Serialize(new
+        {
+            event_id = "event-invalid-rest",
+            operator_id = "ou_user",
+            timestamp = "1786784400000",
+            token = "callback-token",
+            action_value = action
+        });
+
+        var inbound = Assert.IsType<WorktimeActionInboundEvent>(
+            LarkCliWorktimeChannel.ParseInbound("card.action.trigger", line));
+
+        Assert.Null(inbound.RestMinutes);
     }
 
     [Fact]

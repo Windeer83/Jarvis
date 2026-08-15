@@ -233,6 +233,56 @@ public sealed class SupervisionBehaviorScenarios
         Assert.Equal(TimeSpan.FromMinutes(4), oneMinuteLater.CountedDeviation);
     }
 
+    [Fact]
+    public async Task Classifying_current_unknown_as_related_requires_two_stable_minutes_before_reset()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        var activity = new FakeActivitySource();
+        await using var module = await SupervisionModule.OpenAsync(
+            database.Path, clock, activity, new FakeReminderSink());
+        var commitment = await ConfirmComputerAsync(module, Start, "Excel.exe");
+
+        clock.Now = Start.AddMinutes(1);
+        Observe(activity, clock, "mystery.exe", active: true);
+        await module.TickAsync();
+        clock.Now = Start.AddMinutes(4);
+        Observe(activity, clock, "mystery.exe", active: true);
+        await module.TickAsync();
+        var before = (await module.GetSnapshotAsync()).ActiveSupervision!;
+
+        var corrected = await module.ClassifyActivityAsync(
+            commitment.Id,
+            commitment.Version,
+            before.ActionableTarget!,
+            before.ActivityStateStartedAt!.Value,
+            ActivityClassification.Related,
+            ActivityRuleScope.Commitment,
+            "这是相关软件");
+        Assert.True(corrected.Success, corrected.Message);
+        var immediatelyAfter = (await module.GetSnapshotAsync()).ActiveSupervision!;
+
+        clock.Now = Start.AddMinutes(5);
+        Observe(activity, clock, "mystery.exe", active: true);
+        await module.TickAsync();
+        var oneMinuteLater = (await module.GetSnapshotAsync()).ActiveSupervision!;
+
+        clock.Now = Start.AddMinutes(6);
+        Observe(activity, clock, "mystery.exe", active: true);
+        await module.TickAsync();
+        var twoMinutesLater = (await module.GetSnapshotAsync()).ActiveSupervision!;
+
+        Assert.Equal(Start.AddMinutes(1), before.DeviationStartedAt);
+        Assert.Equal(TimeSpan.FromMinutes(3), before.CountedDeviation);
+        Assert.Equal(before.DeviationStartedAt, immediatelyAfter.DeviationStartedAt);
+        Assert.Equal(before.CountedDeviation, immediatelyAfter.CountedDeviation);
+        Assert.Equal(Start.AddMinutes(4), immediatelyAfter.RelatedStableSince);
+        Assert.Equal(before.DeviationStartedAt, oneMinuteLater.DeviationStartedAt);
+        Assert.Equal(before.CountedDeviation, oneMinuteLater.CountedDeviation);
+        Assert.Null(twoMinutesLater.DeviationStartedAt);
+        Assert.Equal(TimeSpan.Zero, twoMinutesLater.CountedDeviation);
+    }
+
     [Theory]
     [InlineData(ActivityRuleScope.Template)]
     [InlineData(ActivityRuleScope.Global)]

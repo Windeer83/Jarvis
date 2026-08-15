@@ -225,6 +225,26 @@ public sealed class CompanionDesktopPresentationScenarios
         });
     }
 
+    [Fact]
+    public void Proactive_timed_rest_uses_a_minutes_input_instead_of_an_end_time_input()
+    {
+        RunOnStaThread(() =>
+        {
+            var window = new MainWindow();
+            try
+            {
+                var duration = Assert.IsType<TextBox>(window.FindName("RestDurationMinutesBox"));
+                Assert.Equal("15", duration.Text);
+                Assert.Null(window.FindName("RestEndTimeBox"));
+            }
+            finally
+            {
+                window.StopForApplicationExit();
+                window.Hide();
+            }
+        });
+    }
+
     private static CommitmentView Commitment(DateTimeOffset now) => new(
         Guid.NewGuid(), CommitmentKind.Computer, now.AddMinutes(-25), now,
         "交易的复盘", null,

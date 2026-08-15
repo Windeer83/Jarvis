@@ -197,7 +197,7 @@ public sealed class CorePipeScenarios
         var startedRest = await SendAsync(pipeName, new CoreRequest(
             CoreOperations.StartTimedRest,
             CommitmentId: commitmentId,
-            RestEndAt: start.AddMinutes(10),
+            RestMinutes: 10,
             ExpectedVersion: version));
         Assert.True(startedRest.Success);
         Assert.Equal(start.AddMinutes(10),

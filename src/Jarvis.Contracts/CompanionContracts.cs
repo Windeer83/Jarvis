@@ -328,7 +328,8 @@ public sealed record HandleWorktimeActionCommand(
     Guid CommitmentId,
     int ExpectedVersion,
     WorktimeActionKind Action,
-    DateTimeOffset? RestEndAt) : CompanionCommand;
+    DateTimeOffset? RestEndAt,
+    int? RestMinutes = null) : CompanionCommand;
 
 public sealed record HandleWorktimeTextCommand(
     string EventId,

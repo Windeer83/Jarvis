@@ -444,7 +444,8 @@ public sealed record CoreRequest(
     int? ExpectedVersion = null,
     CommitmentTarget? ActivityTarget = null,
     DateTimeOffset? ActivityStateStartedAt = null,
-    CompanionCommand? Companion = null);
+    CompanionCommand? Companion = null,
+    int? RestMinutes = null);
 
 public sealed record CoreResponse(
     bool Success,

@@ -270,10 +270,13 @@ internal sealed class CoreCommandHandler(
             case CoreOperations.StartTimedRest when request.CommitmentId is not null &&
                                                          request.ExpectedVersion is not null:
                 {
-                    var result = await supervision.StartTimedRestAsync(
-                        request.CommitmentId.Value, request.ExpectedVersion.Value,
-                        request.RestEndAt, cancellationToken)
-                        .ConfigureAwait(false);
+                    var result = request.RestMinutes is not null
+                        ? await supervision.StartTimedRestForMinutesAsync(
+                            request.CommitmentId.Value, request.ExpectedVersion.Value,
+                            request.RestMinutes, cancellationToken).ConfigureAwait(false)
+                        : await supervision.StartTimedRestAsync(
+                            request.CommitmentId.Value, request.ExpectedVersion.Value,
+                            request.RestEndAt, cancellationToken).ConfigureAwait(false);
                     return result.Success
                         ? await SuccessAfterMutationAsync(
                             $"已开始限时休息，{result.Value!.EndAt.ToLocalTime():HH:mm} 自动恢复监督。",

@@ -277,8 +277,9 @@
                                     Padding="12,5" Click="AcceptRestButton_Click" />
                             <Button x:Name="DenyRestButton" Content="不是休息" Margin="0,0,8,8"
                                     Padding="12,5" Click="DenyRestButton_Click" />
-                            <TextBox x:Name="RestEndTimeBox" Width="72" Height="30" Margin="0,0,6,8"
-                                     Padding="5" ToolTip="主动休息结束时间，例如 15:20" />
+                            <TextBox x:Name="RestDurationMinutesBox" Width="72" Height="30" Margin="0,0,6,8"
+                                     Padding="5" Text="15" ToolTip="主动休息时长（分钟），例如 15" />
+                            <TextBlock Text="分钟" VerticalAlignment="Center" Margin="0,0,8,8" />
                             <Button Content="主动限时休息" Margin="0,0,8,8" Padding="12,5"
                                     Click="StartTimedRestButton_Click" />
                         </WrapPanel>

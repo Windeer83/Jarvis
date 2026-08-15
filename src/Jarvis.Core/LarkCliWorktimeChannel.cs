@@ -268,23 +268,34 @@ internal sealed class LarkCliWorktimeChannel : IWorktimeChannel
                     lock (_stateLock) _readyEventKeys.Add(eventKey);
                     continue;
                 }
+                WorktimeInboundEvent? inbound = null;
                 try
                 {
-                    var inbound = ParseInbound(eventKey, line);
+                    inbound = ParseInbound(eventKey, line);
                     if (inbound is not null && _onEvent is not null)
                         await _onEvent(inbound, cancellationToken).ConfigureAwait(false);
+                    if (inbound is not null)
+                    {
+                        lock (_stateLock)
+                            if (_lastError?.StartsWith("飞书事件", StringComparison.Ordinal) == true)
+                                _lastError = null;
+                    }
                 }
                 catch (JsonException)
                 {
-                    // One malformed event must not stop the long-lived listener.
+                    lock (_stateLock) _lastError = $"飞书事件格式无效：{eventKey} / JSON";
                 }
                 catch (InvalidOperationException)
                 {
-                    // A stale or invalid callback is isolated to that callback.
+                    lock (_stateLock) _lastError = $"飞书事件内容无效：{eventKey}";
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
-                    lock (_stateLock) _lastError = $"飞书事件处理失败：{exception.GetType().Name}";
+                    var stage = inbound is null
+                        ? "解析"
+                        : $"处理 {ShortEventId(inbound.EventId)}";
+                    lock (_stateLock)
+                        _lastError = $"飞书事件处理失败：{eventKey} / {stage} / {exception.GetType().Name}";
                 }
             }
         }
@@ -321,7 +332,7 @@ internal sealed class LarkCliWorktimeChannel : IWorktimeChannel
         }
     }
 
-    private WorktimeInboundEvent? ParseInbound(string eventKey, string json)
+    internal static WorktimeInboundEvent? ParseInbound(string eventKey, string json)
     {
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
@@ -354,13 +365,15 @@ internal sealed class LarkCliWorktimeChannel : IWorktimeChannel
                       DateTimeOffset.TryParse(restNode.GetString(), CultureInfo.InvariantCulture,
                           DateTimeStyles.RoundtripKind, out var parsedRest)
             ? parsedRest
-            : action.TryGetProperty("rest_minutes", out var minutesNode) &&
-              minutesNode.TryGetInt32(out var restMinutes) && restMinutes > 0
-                ? receivedAt.AddMinutes(restMinutes)
-                : (DateTimeOffset?)null;
+            : (DateTimeOffset?)null;
+        var requestedRestMinutes = action.TryGetProperty("rest_minutes", out var requestedMinutesNode) &&
+                                   requestedMinutesNode.TryGetInt32(out var requestedMinutes) &&
+                                   requestedMinutes is > 0 and <= 1440
+            ? requestedMinutes
+            : (int?)null;
         return new WorktimeActionInboundEvent(
             eventId, sender, receivedAt, String(root, "token") ?? "", cardId, commitmentId,
-            versionNode.GetInt32(), actionKind, restEnd);
+            versionNode.GetInt32(), actionKind, restEnd, requestedRestMinutes);
     }
 
     private async Task StopListenersAsync()
@@ -522,14 +535,26 @@ internal sealed class LarkCliWorktimeChannel : IWorktimeChannel
     private static DateTimeOffset? ParseTimestamp(string? value)
     {
         if (long.TryParse(value, CultureInfo.InvariantCulture, out var number))
-            return number >= 10_000_000_000L
-                ? DateTimeOffset.FromUnixTimeMilliseconds(number)
-                : DateTimeOffset.FromUnixTimeSeconds(number);
+        {
+            try
+            {
+                return number >= 10_000_000_000L
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(number)
+                    : DateTimeOffset.FromUnixTimeSeconds(number);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return null;
+            }
+        }
         return DateTimeOffset.TryParse(
             value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
             ? parsed
             : null;
     }
+
+    private static string ShortEventId(string eventId) =>
+        eventId[..Math.Min(8, eventId.Length)];
 
     private sealed record CliResult(int ExitCode, string StandardOutput, string StandardError);
 }

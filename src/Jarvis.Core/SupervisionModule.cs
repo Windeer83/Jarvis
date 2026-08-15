@@ -829,10 +829,13 @@ public sealed class SupervisionModule : IAsyncDisposable
             ReminderNotice? reminder = null;
             if (classification == ActivityClassification.Related)
             {
-                state = ResetDeviation(state) with
+                state = MaterializeDeviation(state, correctedAt);
+                state = state with
                 {
                     Classification = ActivityClassification.Related,
-                    RelatedStableSince = _clock.Now
+                    DeviationCountingSince = null,
+                    RelatedStableSince = state.DeviationStartedAt is null ? null : correctedAt,
+                    PendingPrompt = null
                 };
             }
             else
@@ -1074,6 +1077,36 @@ public sealed class SupervisionModule : IAsyncDisposable
         {
             _gate.Release();
         }
+    }
+
+    public Task<SupervisionResult<TimedRestView>> StartTimedRestForMinutesAsync(
+        Guid commitmentId,
+        int expectedVersion,
+        int? minutes,
+        CancellationToken cancellationToken = default,
+        string? sourceEventId = null,
+        string? sourceEventOutcome = null)
+    {
+        if (minutes is null or <= 0 or > 1440)
+        {
+            return Task.FromResult(SupervisionResult<TimedRestView>.Fail(
+                "rest_duration_required", "主动限时休息请输入 1–1440 分钟。"));
+        }
+
+        DateTimeOffset endAt;
+        try
+        {
+            endAt = _clock.Now.AddMinutes(minutes.Value);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return Task.FromResult(SupervisionResult<TimedRestView>.Fail(
+                "rest_duration_invalid", "休息分钟数超出可计算范围，请输入较小的正整数。"));
+        }
+
+        return StartTimedRestAsync(
+            commitmentId, expectedVersion, endAt, cancellationToken, sourceEventId,
+            sourceEventOutcome);
     }
 
     public async Task TickAsync(CancellationToken cancellationToken = default)

@@ -288,7 +288,7 @@ internal sealed class CompanionModule : IAsyncDisposable
                 text.EventId, text.SenderId, text.ChatId, text.MessageId, text.Text, text.ReceivedAt),
             WorktimeActionInboundEvent action => new HandleWorktimeActionCommand(
                 action.EventId, action.SenderId, action.CardId, action.CommitmentId,
-                action.CommitmentVersion, action.Action, action.RestEndAt),
+                action.CommitmentVersion, action.Action, action.RestEndAt, action.RestMinutes),
             _ => throw new InvalidOperationException("未知飞书工作时段事件。")
         };
         var outcome = await DispatchAsync(command, cancellationToken).ConfigureAwait(false);
@@ -542,14 +542,17 @@ internal sealed class CompanionModule : IAsyncDisposable
                     .ConfigureAwait(false);
                 break;
             case WorktimeActionKind.StartRest:
-                if (command.RestEndAt is null)
-                    return Fail("rest_end_required", "请补充休息结束时间后再确认。");
-                handledResult = $"已开始休息，至 {command.RestEndAt.Value.ToLocalTime():HH:mm}";
-                var rest = await _supervision.StartTimedRestAsync(
-                    command.CommitmentId, command.ExpectedVersion, command.RestEndAt, cancellationToken,
-                    command.EventId, handledResult)
-                    .ConfigureAwait(false);
+                if (command.RestMinutes is null && command.RestEndAt is null)
+                    return Fail("rest_end_required", "请补充休息时长后再确认。");
+                var rest = command.RestMinutes is not null
+                    ? await _supervision.StartTimedRestForMinutesAsync(
+                        command.CommitmentId, command.ExpectedVersion, command.RestMinutes,
+                        cancellationToken, command.EventId, "已开始限时休息").ConfigureAwait(false)
+                    : await _supervision.StartTimedRestAsync(
+                        command.CommitmentId, command.ExpectedVersion, command.RestEndAt,
+                        cancellationToken, command.EventId, "已开始限时休息").ConfigureAwait(false);
                 if (!rest.Success) return Fail(rest.ErrorCode!, rest.Message!);
+                handledResult = $"已开始休息，至 {rest.Value!.EndAt.ToLocalTime():HH:mm}";
                 break;
             case WorktimeActionKind.Misclassification:
                 var active = supervision.ActiveSupervision;

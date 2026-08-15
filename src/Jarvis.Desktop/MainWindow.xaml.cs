@@ -1290,27 +1290,19 @@ public partial class MainWindow : Window
 
     private async void StartTimedRestButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (!TimeSpan.TryParseExact(
-                RestEndTimeBox.Text.Trim(), ["h\\:mm", "hh\\:mm"],
-                CultureInfo.InvariantCulture, out var time))
+        if (!int.TryParse(
+                RestDurationMinutesBox.Text.Trim(), NumberStyles.None,
+                CultureInfo.InvariantCulture, out var minutes) || minutes is <= 0 or > 1440)
         {
-            SetOperationStatus("请输入明确的休息结束时间（HH:mm）。", isError: true);
-            return;
-        }
-
-        var now = DateTime.Now;
-        var localEnd = DateTime.SpecifyKind(now.Date + time, DateTimeKind.Local);
-        if (localEnd <= now)
-        {
-            SetOperationStatus("休息结束时间必须晚于现在。", isError: true);
+            SetOperationStatus("请输入 1–1440 的整数休息分钟数。", isError: true);
             return;
         }
 
         await SendActiveOperationAsync(new CoreRequest(
             CoreOperations.StartTimedRest,
             CommitmentId: _snapshot?.ActiveComputerCommitmentId,
-            RestEndAt: new DateTimeOffset(localEnd),
-            ExpectedVersion: _snapshot?.ActiveSupervision?.CommitmentVersion));
+            ExpectedVersion: _snapshot?.ActiveSupervision?.CommitmentVersion,
+            RestMinutes: minutes));
     }
 
     private async void InterpretNaturalLanguageButton_Click(object sender, RoutedEventArgs eventArgs)

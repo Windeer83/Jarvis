@@ -31,7 +31,8 @@ internal sealed record WorktimeActionInboundEvent(
     Guid CommitmentId,
     int CommitmentVersion,
     WorktimeActionKind Action,
-    DateTimeOffset? RestEndAt) : WorktimeInboundEvent(EventId, SenderId, ReceivedAt);
+    DateTimeOffset? RestEndAt,
+    int? RestMinutes = null) : WorktimeInboundEvent(EventId, SenderId, ReceivedAt);
 
 internal sealed record WorktimeDeliveryResult(
     bool Success,
