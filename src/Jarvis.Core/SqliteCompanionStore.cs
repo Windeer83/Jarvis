@@ -81,6 +81,20 @@ internal sealed class SqliteCompanionStore
         WriteSettingAsync(
             "ai-monthly-hard-cap", hardCap.ToString(CultureInfo.InvariantCulture), cancellationToken);
 
+    public async Task<AiModelPreference> ReadAiModelPreferenceAsync(CancellationToken cancellationToken)
+    {
+        var value = await ReadSettingAsync("ai-model-preference", cancellationToken).ConfigureAwait(false);
+        return Enum.TryParse<AiModelPreference>(value, ignoreCase: true, out var preference) &&
+               Enum.IsDefined(preference)
+            ? preference
+            : AiModelPreference.Flash;
+    }
+
+    public Task SaveAiModelPreferenceAsync(
+        AiModelPreference preference,
+        CancellationToken cancellationToken) =>
+        WriteSettingAsync("ai-model-preference", preference.ToString(), cancellationToken);
+
     public async Task<StoredWorktimeCandidateBinding?> ReadWorktimeCandidateBindingAsync(
         string eventId,
         CancellationToken cancellationToken)

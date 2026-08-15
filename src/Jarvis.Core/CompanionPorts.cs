@@ -92,7 +92,8 @@ internal sealed record AiProviderResult(
     AiTokenUsage Usage,
     string? ErrorCode = null,
     string? Message = null,
-    NaturalLanguageOperationCandidate? Candidate = null);
+    NaturalLanguageOperationCandidate? Candidate = null,
+    IReadOnlyList<string>? MissingInformation = null);
 
 internal interface ICloudAiProvider
 {

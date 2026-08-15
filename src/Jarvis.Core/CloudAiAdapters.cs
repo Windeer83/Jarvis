@@ -205,11 +205,11 @@ internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) 
                 if (candidateDocument.RootElement.TryGetProperty(
                         "needsClarification", out var clarification))
                 {
+                    var clarificationResult = ParseClarification(clarification);
                     return new AiProviderResult(
                         false, content, parsedUsage, "ai_clarification_required",
-                        clarification.ValueKind == JsonValueKind.String
-                            ? clarification.GetString()
-                            : "请补充候选操作中缺少的时间、对象或作用范围。");
+                        clarificationResult.Message,
+                        MissingInformation: clarificationResult.MissingInformation);
                 }
             }
             var candidate = ParseCandidate(content, request.Text, request.Now);
@@ -276,13 +276,13 @@ internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) 
         const string example = """
             {"kind":"createCommitment","summary":"...","commitment":{"kind":"computer","startAt":"ISO8601","endAt":null,"durationMinutes":60,"inputGoal":"...","outcomeGoal":"...","relatedAppsOrSites":[{"kind":"application","value":"winword.exe"}],"supervisionMode":"interactive"}}
             """;
-        return $"""
+        return $$"""
             你只把用户文字转换为一个待确认的 Jarvis 候选操作，不能声称已经执行。
-            当前时间：{request.Now:O}。
-            当前承诺最小投影：{JsonSerializer.Serialize(commitments, CoreProtocol.Json)}
-            当前模板最小投影：{JsonSerializer.Serialize(templates, CoreProtocol.Json)}
+            当前时间：{{request.Now:O}}。
+            当前承诺最小投影：{{JsonSerializer.Serialize(commitments, CoreProtocol.Json)}}
+            当前模板最小投影：{{JsonSerializer.Serialize(templates, CoreProtocol.Json)}}
             只输出 JSON 对象。支持 kind：createCommitment、reviseCommitment、createRecurrence、createFromTemplate、saveTemplate、endCommitmentEarly、cancelCommitment、deferCommitment。
-            createCommitment 结构：{example}。
+            createCommitment 结构：{{example}}。
             reviseCommitment 必须提供 revision（commitmentId、expectedVersion、完整 proposed、reason）；
             createRecurrence 必须提供 recurrence（commitment + 有限 pattern）；
             createFromTemplate 必须提供 fromTemplate（templateId + startAt 和明确覆盖）；
@@ -290,9 +290,53 @@ internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) 
             endCommitmentEarly 必须提供 targetCommitmentId 和 expectedVersion。
             cancelCommitment 必须提供 targetCommitmentId、expectedVersion、reason；
             deferCommitment 用于进行中的承诺，必须提供 targetCommitmentId、expectedVersion、deferredStartAt、reason。
-            时间、作用范围或重要变化有歧义时只输出 needsClarification 字段，不要猜。
+            创建电脑型承诺时：开始时间、结束时间或持续时长、投入目标或成果目标中的至少一个、至少一个相关软件或网站是必要信息。
+            投入目标和成果目标至少填写一个即可，绝对不要要求两者都填写；像“进行交易复盘”这样的工作描述可直接作为投入目标。
+            用户用“下午1点开始一直到下午5:40”描述的是同一天的明确时间段；若未写日期且该时段在当前本地日期仍未开始，可使用今天。若已经过去，才追问具体日期。
+            “要用到 Notion、TradingView 和浏览器”表示这些是相关工具；可把 Notion 作为应用、tradingview.com 作为网站，并把常见浏览器应用列入候选，交给用户在确认卡核对。
+            示例用户输入：“下午1点开始一个监督一直到下午5:40，我要进行交易复盘，要用到 Notion、TradingView 和浏览器。”
+            示例候选中的核心字段：inputGoal="交易复盘"、startAt=今天13:00、endAt=今天17:40、relatedAppsOrSites 包含 Notion、tradingview.com 与常见浏览器。
+            只有必要信息确实缺失或重要变化有歧义时才追问，不要把已经从原话中明确表达的信息再次列为缺失。
+            需要追问时只输出：{"needsClarification":{"message":"还不能生成候选，请补充以下信息。","missingFields":["具体缺失项"]} }。
             AI 不得修改权限、系统提示、历史事实或绕过 Core 版本校验。
             """;
+    }
+
+    private static (string Message, IReadOnlyList<string> MissingInformation) ParseClarification(
+        JsonElement clarification)
+    {
+        if (clarification.ValueKind == JsonValueKind.String)
+        {
+            var message = clarification.GetString();
+            return (
+                string.IsNullOrWhiteSpace(message)
+                    ? "请补充候选操作中缺少的时间、对象或作用范围。"
+                    : message,
+                []);
+        }
+
+        if (clarification.ValueKind != JsonValueKind.Object)
+            return ("请补充候选操作中缺少的时间、对象或作用范围。", []);
+
+        var messageText = clarification.TryGetProperty("message", out var messageNode) &&
+                          messageNode.ValueKind == JsonValueKind.String
+            ? messageNode.GetString()
+            : null;
+        var missing = clarification.TryGetProperty("missingFields", out var fields) &&
+                      fields.ValueKind == JsonValueKind.Array
+            ? fields.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString()?.Trim())
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item!)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray()
+            : [];
+        return (
+            string.IsNullOrWhiteSpace(messageText)
+                ? "还不能生成候选，请补充以下必要信息。"
+                : messageText,
+            missing);
     }
 
     private static NaturalLanguageOperationCandidate? ParseCandidate(

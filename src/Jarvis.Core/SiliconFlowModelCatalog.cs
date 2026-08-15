@@ -14,16 +14,28 @@ internal static class SiliconFlowModelCatalog
     public const string ProviderName = "SiliconFlow";
     public const string Endpoint = "https://api.siliconflow.cn/v1/chat/completions";
     public const string PriceVersion = "2026-08-15";
-    public const string StatusModel = "DeepSeek-V4-Flash（普通） / DeepSeek-V4-Pro（复盘与复杂操作）";
 
-    public static SiliconFlowModelProfile Select(AiRequestPurpose purpose) => purpose switch
+    public static SiliconFlowModelProfile Select(
+        AiRequestPurpose purpose,
+        AiModelPreference preference = AiModelPreference.Flash)
     {
-        AiRequestPurpose.BasicChat => Flash,
-        AiRequestPurpose.NaturalLanguageOperation or
-        AiRequestPurpose.DailyReviewAssist or
-        AiRequestPurpose.CycleReviewAssist => Pro,
-        _ => throw new ArgumentOutOfRangeException(nameof(purpose), purpose, "未知的 AI 请求用途。")
-    };
+        if (!Enum.IsDefined(purpose))
+            throw new ArgumentOutOfRangeException(nameof(purpose), purpose, "未知的 AI 请求用途。");
+        return preference switch
+        {
+            AiModelPreference.Flash => Flash,
+            AiModelPreference.Pro => Pro,
+            _ => throw new ArgumentOutOfRangeException(nameof(preference), preference, "未知的 AI 模型选择。")
+        };
+    }
+
+    public static string Describe(AiModelPreference preference) =>
+        preference switch
+        {
+            AiModelPreference.Flash => "DeepSeek-V4-Flash（全局）",
+            AiModelPreference.Pro => "DeepSeek-V4-Pro（全局）",
+            _ => "未知模型"
+        };
 
     public static SiliconFlowModelProfile Resolve(string model) =>
         string.Equals(model, Flash.Model, StringComparison.Ordinal) ? Flash :

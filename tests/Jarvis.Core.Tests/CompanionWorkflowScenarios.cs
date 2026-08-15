@@ -228,7 +228,7 @@ public sealed class CompanionWorkflowScenarios
         var status = (await companion.SnapshotAsync()).Ai;
         Assert.Equal("SiliconFlow", status.Provider);
         Assert.Contains("DeepSeek-V4-Flash", status.Model, StringComparison.Ordinal);
-        Assert.Contains("DeepSeek-V4-Pro", status.Model, StringComparison.Ordinal);
+        Assert.DoesNotContain("DeepSeek-V4-Pro", status.Model, StringComparison.Ordinal);
         Assert.Equal("9876", status.CredentialLastFour);
 
         var chat = await companion.DispatchAsync(new RequestAiChatCommand("你好，帮我简短整理今天的重点。"));
@@ -243,7 +243,7 @@ public sealed class CompanionWorkflowScenarios
     }
 
     [Fact]
-    public async Task SiliconFlow_routes_chat_to_flash_and_complex_operations_to_pro()
+    public async Task SiliconFlow_defaults_every_request_to_flash()
     {
         using var database = new TemporaryDatabase();
         var clock = new FakeClock(Start);
@@ -265,11 +265,41 @@ public sealed class CompanionWorkflowScenarios
             "明天下午三点安排一小时复盘",
             CandidateSource.Desktop));
 
-        Assert.Equal("deepseek-ai/DeepSeek-V4-Pro", provider.LastRequest!.Model);
+        Assert.Equal("deepseek-ai/DeepSeek-V4-Flash", provider.LastRequest!.Model);
         var snapshot = await companion.SnapshotAsync();
         Assert.Equal("SiliconFlow", snapshot.Ai.Provider);
         Assert.Contains("DeepSeek-V4-Flash", snapshot.Ai.Model, StringComparison.Ordinal);
-        Assert.Contains("DeepSeek-V4-Pro", snapshot.Ai.Model, StringComparison.Ordinal);
+        Assert.DoesNotContain("DeepSeek-V4-Pro", snapshot.Ai.Model, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SiliconFlow_model_choice_is_global_explicit_and_survives_restart()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        await using var supervision = await SupervisionModule.OpenAsync(
+            database.Path, clock, new FakeActivitySource(), new FakeReminderSink());
+        var provider = new FakeAiProvider();
+        var credentials = new FakeCredentialStore();
+
+        await using (var companion = await CompanionModule.OpenAsync(
+                         database.Path, supervision, clock, new FakeWorktimeChannel(), provider, credentials))
+        {
+            await companion.DispatchAsync(new SaveAiCredentialCommand("sk-siliconflow-test"));
+            Assert.Equal(AiModelPreference.Flash, (await companion.SnapshotAsync()).Ai.ModelPreference);
+
+            var switched = await companion.DispatchAsync(
+                new SetAiModelPreferenceCommand(AiModelPreference.Pro));
+            Assert.True(switched.Success);
+            Assert.Equal(AiModelPreference.Pro, switched.Snapshot!.Ai.ModelPreference);
+
+            Assert.True((await companion.DispatchAsync(new RequestAiChatCommand("测试 Pro"))).Success);
+            Assert.Equal("deepseek-ai/DeepSeek-V4-Pro", provider.LastRequest!.Model);
+        }
+
+        await using var restarted = await CompanionModule.OpenAsync(
+            database.Path, supervision, clock, new FakeWorktimeChannel(), provider, credentials);
+        Assert.Equal(AiModelPreference.Pro, (await restarted.SnapshotAsync()).Ai.ModelPreference);
     }
 
     [Fact]
@@ -405,6 +435,106 @@ public sealed class CompanionWorkflowScenarios
         Assert.True(confirmed.Success);
         Assert.Single((await supervision.GetSnapshotAsync()).Commitments);
         Assert.Null((await companion.SnapshotAsync()).PendingCandidate);
+    }
+
+    [Fact]
+    public async Task Conversational_time_range_and_tool_list_become_a_confirmable_supervision()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        await using var supervision = await SupervisionModule.OpenAsync(
+            database.Path, clock, new FakeActivitySource(), new FakeReminderSink());
+        var localStart = new DateTimeOffset(2026, 8, 14, 13, 0, 0, TimeSpan.FromHours(8));
+        var localEnd = new DateTimeOffset(2026, 8, 14, 17, 40, 0, TimeSpan.FromHours(8));
+        var draft = new CommitmentDraft(
+            CommitmentKind.Computer,
+            localStart,
+            localEnd,
+            null,
+            "进行交易复盘",
+            null,
+            [
+                new CommitmentTarget(CommitmentTargetKind.Application, "notion.exe"),
+                new CommitmentTarget(CommitmentTargetKind.Website, "tradingview.com"),
+                new CommitmentTarget(CommitmentTargetKind.Application, "chrome.exe")
+            ],
+            Jarvis.Contracts.SupervisionMode.Interactive,
+            null);
+        var content = JsonSerializer.Serialize(new
+        {
+            kind = "createCommitment",
+            summary = "今天 13:00–17:40 进行交易复盘",
+            commitment = draft
+        }, CoreProtocol.Json);
+        var handler = new StubHttpHandler(JsonSerializer.Serialize(new
+        {
+            choices = new[] { new { message = new { content } } },
+            usage = new { prompt_tokens = 100, completion_tokens = 80, prompt_cache_hit_tokens = 0 }
+        }));
+        var provider = new SiliconFlowCloudAiProvider(new HttpClient(handler));
+        var credentials = new FakeCredentialStore();
+        await using var companion = await CompanionModule.OpenAsync(
+            database.Path, supervision, clock, new FakeWorktimeChannel(), provider, credentials);
+        await companion.DispatchAsync(new SaveAiCredentialCommand("sk-siliconflow-test"));
+        const string phrase =
+            "在下午1点开始一个监督一直到下午的5:40。然后我要进行交易的复盘要用到notion。Tradingview和浏览器。";
+
+        var interpreted = await companion.DispatchAsync(
+            new InterpretNaturalLanguageCommand(phrase, CandidateSource.Desktop));
+
+        Assert.True(interpreted.Success, interpreted.Message);
+        Assert.Equal("deepseek-ai/DeepSeek-V4-Flash", providerRequestModel(handler.RequestBody!));
+        Assert.Empty((await supervision.GetSnapshotAsync()).Commitments);
+        Assert.Contains("交易复盘", interpreted.Candidate!.Summary, StringComparison.Ordinal);
+
+        var confirmed = await companion.DispatchAsync(
+            new ConfirmNaturalLanguageCandidateCommand(interpreted.Candidate.CandidateId));
+
+        Assert.True(confirmed.Success, confirmed.Message);
+        var commitment = Assert.Single((await supervision.GetSnapshotAsync()).Commitments);
+        Assert.Equal(localStart, commitment.StartAt);
+        Assert.Equal(localEnd, commitment.EndAt);
+        Assert.Equal("进行交易复盘", commitment.InputGoal);
+        Assert.Contains(commitment.RelatedAppsOrSites, item =>
+            item.Kind == CommitmentTargetKind.Website && item.Value == "tradingview.com");
+        Assert.Equal(CommitmentPhase.Scheduled, commitment.Phase);
+
+        static string? providerRequestModel(string requestBody)
+        {
+            using var request = JsonDocument.Parse(requestBody);
+            return request.RootElement.GetProperty("model").GetString();
+        }
+    }
+
+    [Fact]
+    public async Task Core_validation_returns_the_exact_missing_information_for_an_invalid_ai_candidate()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        await using var supervision = await SupervisionModule.OpenAsync(
+            database.Path, clock, new FakeActivitySource(), new FakeReminderSink());
+        var provider = new FakeAiProvider
+        {
+            NextCandidate = new NaturalLanguageOperationCandidate(
+                Guid.NewGuid(), CandidateOperationKind.CreateCommitment, "下午开始监督",
+                new CommitmentDraft(
+                    CommitmentKind.Computer, Start.AddHours(4), Start.AddHours(8), null,
+                    null, null,
+                    [new CommitmentTarget(CommitmentTargetKind.Application, "notion.exe")],
+                    Jarvis.Contracts.SupervisionMode.Interactive,
+                    null))
+        };
+        await using var companion = await CompanionModule.OpenAsync(
+            database.Path, supervision, clock, new FakeWorktimeChannel(), provider,
+            new FakeCredentialStore());
+        await companion.DispatchAsync(new SaveAiCredentialCommand("sk-siliconflow-test"));
+
+        var outcome = await companion.DispatchAsync(new InterpretNaturalLanguageCommand(
+            "下午开始监督", CandidateSource.Desktop));
+
+        Assert.False(outcome.Success);
+        Assert.Equal("goal_required", outcome.ErrorCode);
+        Assert.Equal(["投入目标或成果目标（二选一即可）"], outcome.MissingInformation);
     }
 
     [Fact]
@@ -556,6 +686,14 @@ public sealed class CompanionWorkflowScenarios
             Companion: new SetAiMonthlyHardCapCommand(35m)), CoreProtocol.Json);
         var capRoundTrip = JsonSerializer.Deserialize<CoreRequest>(capJson, CoreProtocol.Json);
         Assert.Equal(35m, Assert.IsType<SetAiMonthlyHardCapCommand>(capRoundTrip!.Companion).HardCapCny);
+
+        var modelJson = JsonSerializer.Serialize(new CoreRequest(
+            CoreOperations.DispatchCompanion,
+            Companion: new SetAiModelPreferenceCommand(AiModelPreference.Pro)), CoreProtocol.Json);
+        var modelRoundTrip = JsonSerializer.Deserialize<CoreRequest>(modelJson, CoreProtocol.Json);
+        Assert.Equal(
+            AiModelPreference.Pro,
+            Assert.IsType<SetAiModelPreferenceCommand>(modelRoundTrip!.Companion).Preference);
     }
 
     [Fact]
@@ -622,9 +760,9 @@ public sealed class CompanionWorkflowScenarios
         var usage = new AiTokenUsage(1_000_000, 1_000_000, 0);
 
         var flash = SiliconFlowModelCatalog.CalculateCost(
-            SiliconFlowModelCatalog.Select(AiRequestPurpose.BasicChat), usage);
+            SiliconFlowModelCatalog.Select(AiRequestPurpose.BasicChat, AiModelPreference.Flash), usage);
         var pro = SiliconFlowModelCatalog.CalculateCost(
-            SiliconFlowModelCatalog.Select(AiRequestPurpose.CycleReviewAssist), usage);
+            SiliconFlowModelCatalog.Select(AiRequestPurpose.CycleReviewAssist, AiModelPreference.Pro), usage);
 
         Assert.Equal(3m, flash);
         Assert.Equal(36m, pro);
@@ -695,6 +833,43 @@ public sealed class CompanionWorkflowScenarios
         Assert.False(result.Success);
         Assert.Equal("ai_clarification_required", result.ErrorCode);
         Assert.Contains("持续多久", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SiliconFlow_clarification_names_each_missing_item_and_guides_conversational_time_ranges()
+    {
+        var content = JsonSerializer.Serialize(new
+        {
+            needsClarification = new
+            {
+                message = "还不能生成候选，请补充必要信息。",
+                missingFields = new[] { "监督结束时间或持续时长", "投入目标或成果目标（二选一即可）" }
+            }
+        });
+        var handler = new StubHttpHandler(JsonSerializer.Serialize(new
+        {
+            choices = new[] { new { message = new { content } } },
+            usage = new { prompt_tokens = 30, completion_tokens = 20 }
+        }));
+        using var provider = new SiliconFlowCloudAiProvider(new HttpClient(handler));
+
+        var result = await provider.CompleteAsync(
+            new AiProviderRequest(
+                AiRequestPurpose.NaturalLanguageOperation,
+                "下午1点开始监督到5:40，做交易复盘，要用 Notion、TradingView 和浏览器。",
+                "deepseek-ai/DeepSeek-V4-Flash", 500, Start),
+            "sk-test", CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal("ai_clarification_required", result.ErrorCode);
+        Assert.Equal(
+            ["监督结束时间或持续时长", "投入目标或成果目标（二选一即可）"],
+            result.MissingInformation);
+        using var request = JsonDocument.Parse(handler.RequestBody!);
+        var systemPrompt = request.RootElement.GetProperty("messages")[0].GetProperty("content").GetString();
+        Assert.Contains("投入目标和成果目标至少填写一个", systemPrompt, StringComparison.Ordinal);
+        Assert.Contains("下午1点", systemPrompt, StringComparison.Ordinal);
+        Assert.Contains("Notion", systemPrompt, StringComparison.Ordinal);
     }
 
     [Fact]

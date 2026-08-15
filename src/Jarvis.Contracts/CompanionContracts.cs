@@ -72,6 +72,12 @@ public enum AiRequestPurpose
     CycleReviewAssist
 }
 
+public enum AiModelPreference
+{
+    Flash,
+    Pro
+}
+
 public enum CandidateSource
 {
     Desktop,
@@ -210,7 +216,8 @@ public sealed record AiStatusView(
     bool Alert15Reached,
     bool Alert24Reached,
     string? LastError,
-    bool IsRequestInProgress = false);
+    bool IsRequestInProgress = false,
+    AiModelPreference ModelPreference = AiModelPreference.Flash);
 
 public sealed record AiRequestRecordView(
     Guid RequestId,
@@ -266,7 +273,7 @@ public sealed record CompanionSnapshot(
         new(ReviewSessionState.NotDue, new TimeOnly(23, 0)),
         new(ReviewSessionState.NotDue, 14),
         new(false, "SiliconFlow",
-            "DeepSeek-V4-Flash（普通） / DeepSeek-V4-Pro（复盘与复杂操作）",
+            "DeepSeek-V4-Flash（全局）",
             null, 0m, 30m, false, false, null),
         [],
         [],
@@ -295,6 +302,7 @@ public sealed record CompanionSnapshot(
 [JsonDerivedType(typeof(SaveAiCredentialCommand), "saveAiCredential")]
 [JsonDerivedType(typeof(DeleteAiCredentialCommand), "deleteAiCredential")]
 [JsonDerivedType(typeof(SetAiMonthlyHardCapCommand), "setAiMonthlyHardCap")]
+[JsonDerivedType(typeof(SetAiModelPreferenceCommand), "setAiModelPreference")]
 [JsonDerivedType(typeof(RequestAiChatCommand), "requestAiChat")]
 [JsonDerivedType(typeof(InterpretNaturalLanguageCommand), "interpretNaturalLanguage")]
 [JsonDerivedType(typeof(ConfirmNaturalLanguageCandidateCommand), "confirmNaturalLanguageCandidate")]
@@ -377,6 +385,8 @@ public sealed record DeleteAiCredentialCommand : CompanionCommand;
 
 public sealed record SetAiMonthlyHardCapCommand(decimal HardCapCny) : CompanionCommand;
 
+public sealed record SetAiModelPreferenceCommand(AiModelPreference Preference) : CompanionCommand;
+
 public sealed record RequestAiChatCommand(
     string Text,
     bool ApprovedEstimatedCostOverOneCny = false,
@@ -397,4 +407,5 @@ public sealed record CompanionOutcome(
     string? Message = null,
     CompanionSnapshot? Snapshot = null,
     NaturalLanguageOperationCandidate? Candidate = null,
-    string? AssistantText = null);
+    string? AssistantText = null,
+    IReadOnlyList<string>? MissingInformation = null);

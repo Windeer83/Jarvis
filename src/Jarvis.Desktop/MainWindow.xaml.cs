@@ -26,6 +26,7 @@ public partial class MainWindow : Window
     private readonly LocalReminderSoundGate _soundGate = new();
     private bool _refreshing;
     private bool _suppressSelectionEvents;
+    private bool _naturalLanguageBusy;
 
     public MainWindow()
     {
@@ -44,6 +45,8 @@ public partial class MainWindow : Window
         ChangeScopeBox.SelectedItem = RecurrenceChangeScope.ThisOccurrence;
         CompletionAssessmentBox.ItemsSource = Enum.GetValues<CompletionAssessment>();
         CompletionAssessmentBox.SelectedItem = CompletionAssessment.Completed;
+        AiModelPreferenceBox.ItemsSource = Enum.GetValues<AiModelPreference>();
+        AiModelPreferenceBox.SelectedItem = AiModelPreference.Flash;
 
         var suggestedStart = DateTime.Now.AddMinutes(5);
         StartDatePicker.SelectedDate = suggestedStart.Date;
@@ -1298,9 +1301,22 @@ public partial class MainWindow : Window
             ExpectedVersion: _snapshot?.ActiveSupervision?.CommitmentVersion));
     }
 
-    private async void InterpretNaturalLanguageButton_Click(object sender, RoutedEventArgs eventArgs) =>
-        await SendCompanionAsync(new InterpretNaturalLanguageCommand(
-            NaturalLanguageBox.Text, CandidateSource.Desktop));
+    private async void InterpretNaturalLanguageButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_naturalLanguageBusy) return;
+        SetNaturalLanguageBusy(true);
+        try
+        {
+            var outcome = await SendCompanionAsync(new InterpretNaturalLanguageCommand(
+                NaturalLanguageBox.Text, CandidateSource.Desktop));
+            if (outcome is { Success: false })
+                NaturalLanguageCandidateText.Text = NaturalLanguageCandidatePresentation.FormatFailure(outcome);
+        }
+        finally
+        {
+            SetNaturalLanguageBusy(false);
+        }
+    }
 
     private async void ConfirmNaturalLanguageCandidateButton_Click(
         object sender,
@@ -1361,6 +1377,17 @@ public partial class MainWindow : Window
             if (confirmation != MessageBoxResult.Yes) return;
         }
         await SendCompanionAsync(new SetAiMonthlyHardCapCommand(hardCap));
+    }
+
+    private async void SetAiModelPreferenceButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (AiModelPreferenceBox.SelectedItem is not AiModelPreference preference)
+        {
+            SetOperationStatus("请先选择 Flash 或 Pro。", isError: true);
+            return;
+        }
+
+        await SendCompanionAsync(new SetAiModelPreferenceCommand(preference));
     }
 
     private async void SendAiChatButton_Click(object sender, RoutedEventArgs eventArgs)
@@ -1590,6 +1617,7 @@ public partial class MainWindow : Window
         _naturalLanguageCandidate = snapshot.PendingCandidate;
 
         var ai = snapshot.Ai;
+        AiModelPreferenceBox.SelectedItem = ai.ModelPreference;
         AiStatusText.Text = ai.Enabled
             ? $"{ai.Provider} · {ai.Model} · Key …{ai.CredentialLastFour} · 本月 ¥{ai.MonthSpendCny:F4}/¥{ai.MonthlyHardCapCny:F0}"
             : $"{ai.Provider} · {ai.Model} · 未配置（表单、模板和监督仍可用）";
@@ -1598,7 +1626,10 @@ public partial class MainWindow : Window
         if (ai.Alert24Reached) AiStatusText.Text += " · 已达到 ¥24 预警";
         else if (ai.Alert15Reached) AiStatusText.Text += " · 已达到 ¥15 预警";
         if (!string.IsNullOrWhiteSpace(ai.LastError)) AiStatusText.Text += $" · 最近错误：{ai.LastError}";
-        NaturalLanguageCandidateText.Text = snapshot.PendingCandidate?.Summary ?? "当前没有候选操作。";
+        if (!_naturalLanguageBusy)
+            NaturalLanguageCandidateText.Text = snapshot.PendingCandidate?.Summary ?? "当前没有候选操作。";
+        ConfirmNaturalLanguageCandidateButton.IsEnabled = !_naturalLanguageBusy && _naturalLanguageCandidate is not null;
+        DiscardNaturalLanguageCandidateButton.IsEnabled = !_naturalLanguageBusy && _naturalLanguageCandidate is not null;
         AiChatResultText.Text = snapshot.RecentChat.LastOrDefault(item => item.Role == "assistant")?.Text ?? "";
 
         var channel = snapshot.WorktimeChannel;
@@ -1656,6 +1687,16 @@ public partial class MainWindow : Window
         AiStatusText.Text = "Core 未连接";
         DailyReviewQuestionText.Text = "Core 未连接";
         CycleReviewSummaryText.Text = "Core 未连接";
+    }
+
+    private void SetNaturalLanguageBusy(bool busy)
+    {
+        _naturalLanguageBusy = busy;
+        NaturalLanguageBusyPanel.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        GenerateNaturalLanguageCandidateButton.IsEnabled = !busy;
+        ConfirmNaturalLanguageCandidateButton.IsEnabled = !busy && _naturalLanguageCandidate is not null;
+        DiscardNaturalLanguageCandidateButton.IsEnabled = !busy && _naturalLanguageCandidate is not null;
+        if (busy) NaturalLanguageCandidateText.Text = NaturalLanguageCandidatePresentation.BusyText;
     }
 
     private static string DailyQuestion(DailyReviewView review)

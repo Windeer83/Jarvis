@@ -120,6 +120,7 @@ internal sealed class CompanionModule : IAsyncDisposable
                 SaveAiCredentialCommand value => await SaveAiCredentialAsync(value, cancellationToken),
                 DeleteAiCredentialCommand => await DeleteAiCredentialAsync(cancellationToken),
                 SetAiMonthlyHardCapCommand value => await SetAiMonthlyHardCapAsync(value, cancellationToken),
+                SetAiModelPreferenceCommand value => await SetAiModelPreferenceAsync(value, cancellationToken),
                 RequestAiChatCommand value => await RequestAiChatAsync(value, cancellationToken),
                 InterpretNaturalLanguageCommand value => await InterpretNaturalLanguageAsync(value, cancellationToken),
                 ConfirmNaturalLanguageCandidateCommand value =>
@@ -190,6 +191,7 @@ internal sealed class CompanionModule : IAsyncDisposable
         var lastFour = string.IsNullOrEmpty(currentCredential) ? null : currentCredential[^Math.Min(4, currentCredential.Length)..];
         var spend = await _store.ReadMonthSpendAsync(_clock.Now, cancellationToken).ConfigureAwait(false);
         var hardCap = await _store.ReadAiMonthlyHardCapAsync(cancellationToken).ConfigureAwait(false);
+        var modelPreference = await _store.ReadAiModelPreferenceAsync(cancellationToken).ConfigureAwait(false);
         var dailyReview = await _store.ReadDailyReviewAsync(cancellationToken).ConfigureAwait(false);
         var factsDate = dailyReview.ReviewDate ?? DateOnly.FromDateTime(_clock.Now.ToLocalTime().DateTime);
         dailyReview = dailyReview with
@@ -209,8 +211,8 @@ internal sealed class CompanionModule : IAsyncDisposable
             await _store.ReadCycleReviewAsync(cancellationToken).ConfigureAwait(false),
             new AiStatusView(
                 lastFour is not null, SiliconFlowModelCatalog.ProviderName,
-                SiliconFlowModelCatalog.StatusModel, lastFour, spend, hardCap,
-                spend >= 15m, spend >= 24m, _aiError, _aiRequestInProgress),
+                SiliconFlowModelCatalog.Describe(modelPreference), lastFour, spend, hardCap,
+                spend >= 15m, spend >= 24m, _aiError, _aiRequestInProgress, modelPreference),
             await _store.ReadRecentAiUsageAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadRecentChatAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadPendingCandidateAsync(cancellationToken).ConfigureAwait(false));
@@ -1117,6 +1119,19 @@ internal sealed class CompanionModule : IAsyncDisposable
             await SnapshotAsync(cancellationToken));
     }
 
+    private async Task<CompanionOutcome> SetAiModelPreferenceAsync(
+        SetAiModelPreferenceCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (!Enum.IsDefined(command.Preference))
+            return Fail("ai_model_preference_invalid", "AI 模型选择无效。");
+        await _store.SaveAiModelPreferenceAsync(command.Preference, cancellationToken).ConfigureAwait(false);
+        var label = command.Preference == AiModelPreference.Flash
+            ? "DeepSeek-V4-Flash"
+            : "DeepSeek-V4-Pro";
+        return Ok($"所有云端 AI 请求已切换为 {label}。", await SnapshotAsync(cancellationToken));
+    }
+
     private async Task<CompanionOutcome> RequestAiChatAsync(
         RequestAiChatCommand command,
         CancellationToken cancellationToken)
@@ -1174,7 +1189,8 @@ internal sealed class CompanionModule : IAsyncDisposable
                 {
                     var prepared = await _supervision.PrepareAsync(candidate.Commitment, cancellationToken)
                         .ConfigureAwait(false);
-                    if (!prepared.Success) return (Fail(prepared.ErrorCode!, prepared.Message!), null);
+                    if (!prepared.Success)
+                        return (FailCandidateValidation(prepared.ErrorCode!, prepared.Message!), null);
                     var card = prepared.Value!;
                     var draft = new CommitmentDraft(
                         card.Kind, card.StartAt, card.EndAt, null, card.InputGoal, card.OutcomeGoal,
@@ -1491,7 +1507,8 @@ internal sealed class CompanionModule : IAsyncDisposable
         var hardCap = await _store.ReadAiMonthlyHardCapAsync(cancellationToken).ConfigureAwait(false);
         if (spend >= hardCap)
             return (Fail("ai_monthly_cap_reached", $"本月 AI 费用已到 {hardCap:F2} 元硬上限；确定性监督继续运行。"), null);
-        var profile = SiliconFlowModelCatalog.Select(purpose);
+        var preference = await _store.ReadAiModelPreferenceAsync(cancellationToken).ConfigureAwait(false);
+        var profile = SiliconFlowModelCatalog.Select(purpose, preference);
         var aiRequest = new AiProviderRequest(
             purpose, text, profile.Model, maxOutputTokens, _clock.Now,
             await _supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false));
@@ -1553,7 +1570,8 @@ internal sealed class CompanionModule : IAsyncDisposable
                 providerResult.ErrorCode == "ai_clarification_required"
                     ? providerResult.Message ?? "请补充候选操作中的歧义。"
                     : providerResult.Message ??
-                      "云端 AI 调用失败；确定性监督和手工操作不受影响。"), providerResult);
+                      "云端 AI 调用失败；确定性监督和手工操作不受影响。",
+                providerResult.MissingInformation), providerResult);
         }
 
         _aiError = null;
@@ -1584,8 +1602,21 @@ internal sealed class CompanionModule : IAsyncDisposable
         }
     }
 
-    private static CompanionOutcome Fail(string code, string message) =>
-        new(false, code, message);
+    private static CompanionOutcome Fail(
+        string code,
+        string message,
+        IReadOnlyList<string>? missingInformation = null) =>
+        new(false, code, message, MissingInformation: missingInformation);
+
+    private static CompanionOutcome FailCandidateValidation(string code, string message) =>
+        Fail(code, message, code switch
+        {
+            "goal_required" => ["投入目标或成果目标（二选一即可）"],
+            "related_activity_required" => ["至少一个相关软件或网站"],
+            "duration_invalid" or "time_invalid" or "time_conflict" =>
+                ["有效的结束时间或持续时长"],
+            _ => null
+        });
 
     private static string? Suffix(string? value) =>
         string.IsNullOrEmpty(value) ? null : value[^Math.Min(4, value.Length)..];
