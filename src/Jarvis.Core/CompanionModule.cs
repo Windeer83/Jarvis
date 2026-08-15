@@ -20,6 +20,7 @@ internal sealed class CompanionModule : IAsyncDisposable
     private readonly IAiCredentialStore _credentialStore;
     private readonly DataGovernanceService _dataGovernance;
     private readonly BackupService _backupService;
+    private readonly MaintenanceService _maintenanceService;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _listenerReady;
     private string? _worktimeError;
@@ -36,7 +37,8 @@ internal sealed class CompanionModule : IAsyncDisposable
         ICloudAiProvider aiProvider,
         IAiCredentialStore credentialStore,
         DataGovernanceService dataGovernance,
-        BackupService backupService)
+        BackupService backupService,
+        MaintenanceService maintenanceService)
     {
         _store = store;
         _supervision = supervision;
@@ -46,6 +48,7 @@ internal sealed class CompanionModule : IAsyncDisposable
         _credentialStore = credentialStore;
         _dataGovernance = dataGovernance;
         _backupService = backupService;
+        _maintenanceService = maintenanceService;
     }
 
     public static async Task<CompanionModule> OpenAsync(
@@ -57,6 +60,8 @@ internal sealed class CompanionModule : IAsyncDisposable
         IAiCredentialStore credentialStore,
         IBackupPasswordStore? backupPasswordStore = null,
         IBaiduClientProbe? baiduClientProbe = null,
+        IMaintenanceWorkerLauncher? maintenanceWorkerLauncher = null,
+        bool configureExternalChannels = true,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
@@ -65,19 +70,24 @@ internal sealed class CompanionModule : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(worktimeChannel);
         ArgumentNullException.ThrowIfNull(aiProvider);
         ArgumentNullException.ThrowIfNull(credentialStore);
+        var backupService = new BackupService(
+            databasePath,
+            backupPasswordStore ?? new NullBackupPasswordStore(),
+            baiduClientProbe ?? new NullBaiduClientProbe());
         var module = new CompanionModule(
             new SqliteCompanionStore(databasePath), supervision, clock, worktimeChannel,
-            aiProvider, credentialStore, new DataGovernanceService(databasePath),
-            new BackupService(
+            aiProvider, credentialStore, new DataGovernanceService(databasePath), backupService,
+            new MaintenanceService(
                 databasePath,
-                backupPasswordStore ?? new NullBackupPasswordStore(),
-                baiduClientProbe ?? new NullBaiduClientProbe()));
+                backupService,
+                maintenanceWorkerLauncher ?? new PowerShellMaintenanceWorkerLauncher()));
         var dailyConfiguration = await module._store.ReadDailyConfigurationAsync(cancellationToken)
             .ConfigureAwait(false);
         if (dailyConfiguration.ConfiguredAt is null)
             await module._store.SaveDailyConfigurationAsync(
                 dailyConfiguration.LocalTime, clock.Now, cancellationToken).ConfigureAwait(false);
-        await module.ConfigureChannelFromStoreAsync(cancellationToken).ConfigureAwait(false);
+        if (configureExternalChannels)
+            await module.ConfigureChannelFromStoreAsync(cancellationToken).ConfigureAwait(false);
         return module;
     }
 
@@ -171,6 +181,10 @@ internal sealed class CompanionModule : IAsyncDisposable
                 CreateBackupCommand value => await CreateBackupAsync(value, cancellationToken),
                 TestBackupRestoreCommand value => await TestBackupRestoreAsync(value, cancellationToken),
                 ScheduleBackupRestoreCommand value => await ScheduleBackupRestoreAsync(value, cancellationToken),
+                PrepareProductUpdateCommand value => await PrepareProductUpdateAsync(value, cancellationToken),
+                ConfirmProductUpdateCommand value => await ConfirmProductUpdateAsync(value, cancellationToken),
+                PrepareSafeEraseCommand value => await PrepareSafeEraseAsync(value, cancellationToken),
+                ConfirmSafeEraseCommand value => await ConfirmSafeEraseAsync(value, cancellationToken),
                 _ => Fail("companion_command_unknown", "Core 无法识别这项助手操作。")
             };
             if (worktimeEventId is not null)
@@ -271,7 +285,8 @@ internal sealed class CompanionModule : IAsyncDisposable
             await _store.ReadAiTrialEvidenceAsync(_clock.Now, cancellationToken).ConfigureAwait(false),
             Persona: ToPersonaView(personaState),
             DataGovernance: await _dataGovernance.ReadStatusAsync(cancellationToken).ConfigureAwait(false),
-            Backup: await _backupService.ReadStatusAsync(_clock.Now, cancellationToken).ConfigureAwait(false));
+            Backup: await _backupService.ReadStatusAsync(_clock.Now, cancellationToken).ConfigureAwait(false),
+            Maintenance: await _maintenanceService.ReadLastOperationAsync(cancellationToken).ConfigureAwait(false));
     }
 
     public async ValueTask DisposeAsync()
@@ -1379,6 +1394,111 @@ internal sealed class CompanionModule : IAsyncDisposable
             return Fail("backup_restore_schedule_failed", exception.Message);
         }
         return await BackupSuccessAsync(result.Message, result, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<CompanionOutcome> PrepareProductUpdateAsync(
+        PrepareProductUpdateCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var snapshot = await _supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            var active = snapshot.ActiveComputerCommitmentId is { } activeId
+                ? snapshot.Commitments.SingleOrDefault(item => item.Id == activeId)
+                : null;
+            if (active is not null && !command.StopActiveSupervision)
+                return Fail(
+                    "update_active_supervision",
+                    "当前仍在监督。请等待结束，或明确选择“停止当前监督后更新”；Jarvis 不会静默中断监督。");
+            var stopped = false;
+            if (active is not null)
+            {
+                var ended = await _supervision.EndCommitmentEarlyAsync(
+                    active.Id, active.Version, cancellationToken).ConfigureAwait(false);
+                if (!ended.Success) return Fail(ended.ErrorCode ?? "update_stop_failed", ended.Message ?? "无法停止当前监督。");
+                stopped = true;
+            }
+            var card = await _maintenanceService.PrepareUpdateAsync(
+                command.InstallerPath, stopped, _clock.Now, cancellationToken).ConfigureAwait(false);
+            return new(
+                true,
+                Message: "升级前密码保护备份与本地数据库回滚快照均已验证。更新尚未开始，请核对安装包摘要并再次确认。",
+                Snapshot: await SnapshotAsync(cancellationToken),
+                ProductUpdate: card);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidOperationException or IOException or
+                UnauthorizedAccessException or ZipException or SqliteException or CryptographicException)
+        {
+            return Fail("update_preflight_failed", exception.Message);
+        }
+    }
+
+    private async Task<CompanionOutcome> ConfirmProductUpdateAsync(
+        ConfirmProductUpdateCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var snapshot = await _supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            if (snapshot.ActiveComputerCommitmentId is not null)
+                return Fail(
+                    "update_active_supervision_changed",
+                    "预览后出现了新的自动监督。本次更新已阻止；请重新预览并明确决定是否停止当前监督。");
+            var operation = await _maintenanceService.ConfirmUpdateAsync(
+                command.CandidateId, command.ConfirmationPhrase, _clock.Now, cancellationToken)
+                .ConfigureAwait(false);
+            return new(true, Message: operation.Status, MaintenanceOperation: operation);
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or IOException or UnauthorizedAccessException or
+                CryptographicException)
+        {
+            return Fail("update_confirmation_failed", exception.Message);
+        }
+    }
+
+    private async Task<CompanionOutcome> PrepareSafeEraseAsync(
+        PrepareSafeEraseCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var card = await _maintenanceService.PrepareSafeEraseAsync(
+                command.FinalBackupDirectory, command.Password, command.ConfirmPassword,
+                _clock.Now, cancellationToken).ConfigureAwait(false);
+            return new(
+                true,
+                Message: "最终密码保护备份已在清除范围之外生成并验证。清除尚未执行，请逐项核对范围并输入完整确认短语。",
+                SafeErase: card);
+        }
+        catch (SafeEraseScopeException exception)
+        {
+            return Fail("safe_erase_backup_inside_scope", exception.Message);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidOperationException or IOException or
+                UnauthorizedAccessException or ZipException or SqliteException or CryptographicException)
+        {
+            return Fail("safe_erase_preflight_failed", exception.Message);
+        }
+    }
+
+    private async Task<CompanionOutcome> ConfirmSafeEraseAsync(
+        ConfirmSafeEraseCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var operation = await _maintenanceService.ConfirmSafeEraseAsync(
+                command.CandidateId, command.ConfirmationPhrase, _clock.Now, cancellationToken)
+                .ConfigureAwait(false);
+            return new(true, Message: operation.Status, MaintenanceOperation: operation);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or IOException)
+        {
+            return Fail("safe_erase_confirmation_failed", exception.Message);
+        }
     }
 
     private async Task<CompanionOutcome> BackupSuccessAsync(

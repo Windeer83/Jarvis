@@ -388,7 +388,8 @@ public sealed record CompanionSnapshot(
     AiTrialEvidenceView? TrialEvidence = null,
     CompanionPersonaView? Persona = null,
     DataGovernanceStatusView? DataGovernance = null,
-    BackupStatusView? Backup = null)
+    BackupStatusView? Backup = null,
+    MaintenanceOperationView? Maintenance = null)
 {
     [JsonIgnore]
     public IReadOnlyList<AiReviewDraftView> ConfirmedAiReviewDrafts => AiReviewDraftHistory ?? [];
@@ -465,6 +466,10 @@ public sealed record CompanionSnapshot(
 [JsonDerivedType(typeof(CreateBackupCommand), "createBackup")]
 [JsonDerivedType(typeof(TestBackupRestoreCommand), "testBackupRestore")]
 [JsonDerivedType(typeof(ScheduleBackupRestoreCommand), "scheduleBackupRestore")]
+[JsonDerivedType(typeof(PrepareProductUpdateCommand), "prepareProductUpdate")]
+[JsonDerivedType(typeof(ConfirmProductUpdateCommand), "confirmProductUpdate")]
+[JsonDerivedType(typeof(PrepareSafeEraseCommand), "prepareSafeErase")]
+[JsonDerivedType(typeof(ConfirmSafeEraseCommand), "confirmSafeErase")]
 public abstract record CompanionCommand;
 
 public sealed record ConfigureWorktimeChannelCommand(
@@ -608,4 +613,7 @@ public sealed record CompanionOutcome(
     IReadOnlyList<string>? MissingInformation = null,
     DataRangeView? DataRange = null,
     DataDeletionCard? DataDeletion = null,
-    BackupOperationView? BackupOperation = null);
+    BackupOperationView? BackupOperation = null,
+    ProductUpdateCard? ProductUpdate = null,
+    SafeEraseCard? SafeErase = null,
+    MaintenanceOperationView? MaintenanceOperation = null);

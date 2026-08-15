@@ -69,5 +69,11 @@ internal sealed class TemporaryDatabase : IDisposable
         {
             Directory.Delete(_directory, recursive: true);
         }
+
+        var maintenanceDirectory = _directory + "-Maintenance";
+        if (Directory.Exists(maintenanceDirectory))
+        {
+            Directory.Delete(maintenanceDirectory, recursive: true);
+        }
     }
 }

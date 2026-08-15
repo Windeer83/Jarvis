@@ -1,5 +1,8 @@
 param(
-    [string]$DotnetPath = ""
+    [string]$DotnetPath = "",
+    [ValidatePattern('^\d+\.\d+\.\d+$')]
+    [string]$ProductVersion = "0.1.0",
+    [string]$InstallerOutputDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,9 +19,29 @@ $DotnetPath = (Resolve-Path $DotnetPath).Path
 
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "artifacts"))
 $stageDirectory = Join-Path $artifactRoot "t27-publish"
-$installerDirectory = Join-Path $artifactRoot "installer"
-if (-not $artifactRoot.StartsWith($repositoryRoot, [StringComparison]::OrdinalIgnoreCase)) {
+$installerDirectory = if ([string]::IsNullOrWhiteSpace($InstallerOutputDirectory)) {
+    Join-Path $artifactRoot "installer"
+} else {
+    [IO.Path]::GetFullPath($InstallerOutputDirectory)
+}
+function Is-SameOrChild([string]$Candidate, [string]$Root) {
+    $candidateFull = [IO.Path]::GetFullPath($Candidate).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    return $candidateFull.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)
+}
+if (-not (Is-SameOrChild $artifactRoot $repositoryRoot)) {
     throw "Artifact directory escaped the repository."
+}
+if (-not (Is-SameOrChild $installerDirectory $artifactRoot)) {
+    throw "Installer output directory must stay under the repository artifact directory."
+}
+if ([string]::Equals(
+        $installerDirectory.TrimEnd('\', '/'),
+        $artifactRoot.TrimEnd('\', '/'),
+        [StringComparison]::OrdinalIgnoreCase) -or
+    (Is-SameOrChild $installerDirectory $stageDirectory) -or
+    (Is-SameOrChild $stageDirectory $installerDirectory)) {
+    throw "Installer output directory must be a dedicated directory separate from the publish staging directory."
 }
 if (Test-Path -LiteralPath $stageDirectory) {
     Remove-Item -LiteralPath $stageDirectory -Recurse -Force
@@ -41,6 +64,12 @@ $desktopPublishArguments = @("publish", "src\Jarvis.Desktop\Jarvis.Desktop.cspro
 if ($LASTEXITCODE -ne 0) { throw "Desktop self-contained publish failed." }
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "installer\UNINSTALL-DATA-NOTICE.txt") `
     -Destination $stageDirectory
+Copy-Item -LiteralPath (Join-Path $repositoryRoot "scripts\apply-t28-maintenance.ps1") `
+    -Destination $stageDirectory
+Set-Content -LiteralPath (Join-Path $stageDirectory ".jarvis-program-root") `
+    -Value "Jarvis installed program root" -Encoding ascii
+Set-Content -LiteralPath (Join-Path $stageDirectory "installer-version.txt") `
+    -Value $ProductVersion -Encoding ascii
 
 $core = Join-Path $stageDirectory "Jarvis.Core.exe"
 $desktop = Join-Path $stageDirectory "Jarvis.Desktop.exe"
@@ -114,10 +143,11 @@ foreach ($file in @(Get-ChildItem -LiteralPath $stageDirectory -File -Recurse |
 [IO.File]::WriteAllText($generatedPath, $xml.ToString(), [Text.UTF8Encoding]::new($false))
 
 & $DotnetPath build "installer\Jarvis.Installer.wixproj" -c Release `
-    "-p:PublishDir=$stageDirectory" "-p:OutputPath=$installerDirectory"
+    "-p:PublishDir=$stageDirectory" "-p:OutputPath=$installerDirectory" `
+    "-p:ProductVersion=$ProductVersion"
 if ($LASTEXITCODE -ne 0) { throw "WiX installer build failed." }
 
-$expected = Join-Path $installerDirectory "Jarvis-0.1.0-win-x64.msi"
+$expected = Join-Path $installerDirectory "Jarvis-$ProductVersion-win-x64.msi"
 if (-not (Test-Path -LiteralPath $expected)) {
     $built = Get-ChildItem -LiteralPath $installerDirectory -Filter "*.msi" -File | Select-Object -First 1
     if (-not $built) { throw "WiX build did not produce an MSI." }

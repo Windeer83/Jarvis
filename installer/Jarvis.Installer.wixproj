@@ -2,9 +2,10 @@
   <PropertyGroup>
     <InstallerPlatform>x64</InstallerPlatform>
     <OutputType>Package</OutputType>
-    <OutputName>Jarvis-0.1.0-win-x64</OutputName>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
+    <OutputName>Jarvis-$(ProductVersion)-win-x64</OutputName>
     <Cultures>zh-CN</Cultures>
-    <DefineConstants>PublishDir=$(PublishDir)</DefineConstants>
+    <DefineConstants>PublishDir=$(PublishDir);ProductVersion=$(ProductVersion)</DefineConstants>
     <SuppressIces>ICE38;ICE60;ICE64;ICE91</SuppressIces>
   </PropertyGroup>
   <ItemGroup>

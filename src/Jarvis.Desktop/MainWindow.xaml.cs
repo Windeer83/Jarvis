@@ -29,6 +29,8 @@ public partial class MainWindow : Window
     private AiReviewDraftView? _activeAiReviewDraft;
     private Guid? _displayedAiReviewDraftId;
     private DataDeletionCard? _dataDeletionCandidate;
+    private ProductUpdateCard? _productUpdateCandidate;
+    private SafeEraseCard? _safeEraseCandidate;
     private CommitmentView? _revisionSource;
     private readonly LocalReminderSoundGate _soundGate = new();
     private bool _refreshing;
@@ -1386,6 +1388,91 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ChooseUpdateInstallerButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择已经下载到本机的新版 Jarvis 安装包",
+            Filter = "Jarvis MSI (*.msi)|*.msi",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) == true) UpdateInstallerPathBox.Text = dialog.FileName;
+    }
+
+    private async void PrepareUpdateButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var outcome = await SendCompanionAsync(new PrepareProductUpdateCommand(
+            UpdateInstallerPathBox.Text.Trim(), StopForUpdateBox.IsChecked == true));
+        if (outcome?.ProductUpdate is not { } card) return;
+        _productUpdateCandidate = card;
+        ProductUpdateCardText.Text =
+            $"安装包：{Path.GetFileName(card.InstallerPath)}\n" +
+            $"SHA-256：{card.InstallerSha256}\n" +
+            $"已验证升级备份：{card.VerifiedBackupPath}\n" +
+            $"数据库回滚快照：{card.DatabaseRollbackPath}\n" +
+            (card.ActiveSupervisionStopped ? "当前监督已按你的明确选择停止并进入待回顾。\n" : "") +
+            $"请输入：{card.ConfirmationPhrase}";
+        ProductUpdateConfirmationBox.Clear();
+        ProductUpdatePanel.Visibility = Visibility.Visible;
+    }
+
+    private async void ConfirmUpdateButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_productUpdateCandidate is not { } card) return;
+        var outcome = await SendCompanionAsync(new ConfirmProductUpdateCommand(
+            card.CandidateId, ProductUpdateConfirmationBox.Text));
+        if (outcome?.MaintenanceOperation is not { RequiresProductExit: true } operation) return;
+        MaintenanceOperationText.Text = operation.Status +
+                                        $"\n手动恢复位置：{operation.ManualRecoveryPath}";
+        await ExitForMaintenanceAsync();
+    }
+
+    private void ChooseFinalBackupDirectoryButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "选择不会被安全清除的最终备份目录",
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) == true)
+            FinalBackupDirectoryBox.Text = dialog.FolderName;
+    }
+
+    private async void PrepareSafeEraseButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var outcome = await SendCompanionAsync(new PrepareSafeEraseCommand(
+            FinalBackupDirectoryBox.Text.Trim(), FinalBackupPasswordBox.Password,
+            FinalBackupConfirmPasswordBox.Password));
+        if (outcome?.SafeErase is not { } card) return;
+        _safeEraseCandidate = card;
+        SafeEraseCardText.Text =
+            $"最终备份：{card.FinalBackupPath}\n\n将永久清除：\n- " +
+            string.Join("\n- ", card.LocalScopes) +
+            $"\n\n{card.BoundaryNotice}\n\n请输入：{card.ConfirmationPhrase}";
+        FinalBackupPasswordBox.Clear();
+        FinalBackupConfirmPasswordBox.Clear();
+        SafeEraseConfirmationBox.Clear();
+        SafeErasePanel.Visibility = Visibility.Visible;
+    }
+
+    private async void ConfirmSafeEraseButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_safeEraseCandidate is not { } card) return;
+        var outcome = await SendCompanionAsync(new ConfirmSafeEraseCommand(
+            card.CandidateId, SafeEraseConfirmationBox.Text));
+        if (outcome?.MaintenanceOperation is not { RequiresProductExit: true } operation) return;
+        MaintenanceOperationText.Text = operation.Status;
+        await ExitForMaintenanceAsync();
+    }
+
+    private async Task ExitForMaintenanceAsync()
+    {
+        if (!await RequestProductExitAsync()) return;
+        StopForApplicationExit();
+        System.Windows.Application.Current.Shutdown();
+    }
+
     private async Task GenerateNaturalLanguageCandidateAsync()
     {
         if (_naturalLanguageBusy) return;
@@ -2326,6 +2413,13 @@ public partial class MainWindow : Window
               $" · 保留：每日 {backup.DailyRetention} / 每月 {backup.MonthlyRetention} / 升级前 {backup.UpgradeRetention}\n" +
               backup.CloudStatus +
               (string.IsNullOrWhiteSpace(backup.LastError) ? "" : $"\n最近错误：{backup.LastError}");
+        if (snapshot.Maintenance is { } maintenance)
+        {
+            MaintenanceOperationText.Text = maintenance.Status +
+                (string.IsNullOrWhiteSpace(maintenance.ManualRecoveryPath)
+                    ? ""
+                    : $"\n手动恢复位置：{maintenance.ManualRecoveryPath}");
+        }
 
         var channel = snapshot.WorktimeChannel;
         WorktimeEnabledBox.IsChecked = channel.Enabled;

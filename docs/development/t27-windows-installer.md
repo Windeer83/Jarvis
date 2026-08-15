@@ -20,12 +20,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-t27-p
 
 本次证据：
 
-- MSI：`Jarvis-0.1.0-win-x64.msi`，60,998,551 bytes；
-- SHA-256：`8C3147C494ADF6E2E65E46FF239242DAE29FE9CF5AEADE71AE64A3F355C6FE4D`；
+- MSI：`Jarvis-0.1.0-win-x64.msi`，61,019,418 bytes；
+- SHA-256：`B5499D3764559C9F329C7F9DA45A480EAD76E69E12CB5C2832BABAF89EA9F64F`；
 - WiX 构建 0 warning / 0 error；
 - MSI 在隔离目录真实安装，已安装 Core 与 Desktop 均可启动；Core 只启动一个 Desktop；
 - 普通卸载删除程序文件，同时保留安装目录之外的用户数据哨兵；
-- Release solution 构建 0 warning / 0 error；182/182 自动测试通过，含 Core 所有的登录启动设置 IPC 往返。
+- Release solution 构建 0 warning / 0 error；最终整体验证 185/185 自动测试通过，含 Core 所有的登录启动设置 IPC 往返。
 
 验证脚本用 `ADDLOCAL=MainProgram` 跳过实际写入当前用户的登录启动项，避免自动测试覆盖目标机现有设置；安装器默认选择与注册表作者通过静态包边界检查，开关行为由 Core 定向测试覆盖。
 

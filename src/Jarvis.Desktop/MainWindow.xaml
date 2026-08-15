@@ -598,6 +598,61 @@
                                            Margin="0,8,0,0" TextWrapping="Wrap" />
                             </StackPanel>
                         </TabItem>
+                        <TabItem Header="更新与安全清除（T28）">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="10">
+                                    <TextBlock Text="Jarvis 不会静默下载或安装更新。请先把新版 MSI 下载到本机；监督进行中时默认阻止更新。"
+                                               TextWrapping="Wrap" Foreground="#4A5568" />
+                                    <WrapPanel Margin="0,8,0,0">
+                                        <TextBox x:Name="UpdateInstallerPathBox" Width="620" Padding="6" IsReadOnly="True" />
+                                        <Button Content="选择新版 MSI" Padding="10,5" Margin="8,0,0,0"
+                                                Click="ChooseUpdateInstallerButton_Click" />
+                                    </WrapPanel>
+                                    <CheckBox x:Name="StopForUpdateBox"
+                                              Content="若当前正在监督，明确停止并进入待回顾后再更新"
+                                              Margin="0,8,0,0" />
+                                    <Button Content="升级前检查与备份" Width="150" HorizontalAlignment="Left"
+                                            Margin="0,8,0,0" Padding="10,5" Click="PrepareUpdateButton_Click" />
+                                    <Border x:Name="ProductUpdatePanel" Visibility="Collapsed" Background="#FFF8E1"
+                                            BorderBrush="#D69E2E" BorderThickness="1" CornerRadius="6" Padding="9" Margin="0,8,0,0">
+                                        <StackPanel>
+                                            <TextBlock x:Name="ProductUpdateCardText" TextWrapping="Wrap" />
+                                            <TextBox x:Name="ProductUpdateConfirmationBox" Padding="6" Margin="0,8" />
+                                            <Button Content="确认退出并更新" Padding="10,5" Width="140"
+                                                    HorizontalAlignment="Left" Click="ConfirmUpdateButton_Click" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Separator Margin="0,14,0,10" />
+                                    <TextBlock Text="安全清除本机 Jarvis" FontWeight="SemiBold" />
+                                    <TextBlock Text="这是普通卸载之外的永久操作。它会删除本机数据库、设置、日志、费用记录、配置目录中的 Jarvis 备份和 Jarvis 凭据；不会调用百度 API、删除云端文件或寻找外部密码。"
+                                               TextWrapping="Wrap" Foreground="#9B2C2C" Margin="0,4,0,8" />
+                                    <WrapPanel>
+                                        <TextBox x:Name="FinalBackupDirectoryBox" Width="620" Padding="6" IsReadOnly="True" />
+                                        <Button Content="选择范围外的最终备份目录" Padding="10,5" Margin="8,0,0,0"
+                                                Click="ChooseFinalBackupDirectoryButton_Click" />
+                                    </WrapPanel>
+                                    <WrapPanel Margin="0,8,0,0">
+                                        <TextBlock Text="最终备份密码" VerticalAlignment="Center" />
+                                        <PasswordBox x:Name="FinalBackupPasswordBox" Width="240" Margin="8,0" Padding="6" />
+                                        <TextBlock Text="重复密码" VerticalAlignment="Center" />
+                                        <PasswordBox x:Name="FinalBackupConfirmPasswordBox" Width="240" Margin="8,0" Padding="6" />
+                                    </WrapPanel>
+                                    <Button Content="第一次确认：生成最终备份并预览范围" Padding="10,5" Width="240"
+                                            HorizontalAlignment="Left" Margin="0,8,0,0" Click="PrepareSafeEraseButton_Click" />
+                                    <Border x:Name="SafeErasePanel" Visibility="Collapsed" Background="#FFF1F0"
+                                            BorderBrush="#D92D20" BorderThickness="1" CornerRadius="6" Padding="9" Margin="0,8,0,0">
+                                        <StackPanel>
+                                            <TextBlock x:Name="SafeEraseCardText" TextWrapping="Wrap" />
+                                            <TextBox x:Name="SafeEraseConfirmationBox" Padding="6" Margin="0,8" />
+                                            <Button Content="第二次确认：退出并永久清除" Padding="10,5" Width="210"
+                                                    HorizontalAlignment="Left" Click="ConfirmSafeEraseButton_Click" />
+                                        </StackPanel>
+                                    </Border>
+                                    <TextBlock x:Name="MaintenanceOperationText" Text="尚无维护操作。"
+                                               Margin="0,10,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
                         <TabItem Header="飞书手机闭环">
                             <StackPanel Margin="10">
                                 <WrapPanel>

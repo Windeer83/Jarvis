@@ -157,14 +157,59 @@ internal sealed class BackupService
         if (string.IsNullOrEmpty(password))
             throw new InvalidOperationException("当前电脑未保存备份密码；请本次输入密码或选择保存。");
         ValidatePassword(password);
+        var operation = await CreateAtDirectoryAsync(
+            kind, settings.DirectoryPath, password, now, cancellationToken).ConfigureAwait(false);
+        await SaveSuccessAsync(operation.BackupPath!, now, cancellationToken).ConfigureAwait(false);
+        var cleanupFailures = await CleanupRetentionAsync(
+            settings.DirectoryPath, settings, cancellationToken).ConfigureAwait(false);
+        var message = cleanupFailures.Count == 0
+            ? operation.Message
+            : $"密码保护备份已验证，但有 {cleanupFailures.Count} 个过期文件无法清理；请检查磁盘空间或文件占用。";
+        if (cleanupFailures.Count > 0)
+            await SaveErrorAsync(message, CancellationToken.None).ConfigureAwait(false);
+        return operation with { Message = message };
+    }
 
-        Directory.CreateDirectory(settings.DirectoryPath);
+    internal async Task<BackupOperationView> CreateExternalAsync(
+        string directoryPath,
+        string password,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        ValidatePassword(password);
+        var directory = Path.GetFullPath(directoryPath);
+        return await CreateAtDirectoryAsync(
+            BackupKind.Manual, directory, password, now, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task CreateRollbackSnapshotAsync(
+        string destinationPath,
+        CancellationToken cancellationToken)
+    {
+        var fullPath = Path.GetFullPath(destinationPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        if (File.Exists(fullPath)) File.Delete(fullPath);
+        await CreateConsistentSnapshotAsync(fullPath, cancellationToken).ConfigureAwait(false);
+        await ValidateDatabaseAsync(fullPath, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task<string?> ReadConfiguredDirectoryAsync(CancellationToken cancellationToken) =>
+        (await ReadSettingsAsync(cancellationToken).ConfigureAwait(false)).DirectoryPath;
+
+    private async Task<BackupOperationView> CreateAtDirectoryAsync(
+        BackupKind kind,
+        string directoryPath,
+        string password,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(directoryPath);
         var scratch = Path.Combine(_dataDirectory, ".backup-scratch-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
         var snapshotPath = Path.Combine(scratch, "snapshot.sqlite");
         var token = KindToken(kind);
         var fileName = $"jarvis-{token}-{now:yyyyMMdd-HHmmss-fff}-{Guid.NewGuid():N}.jarvis-backup";
-        var destination = Path.Combine(settings.DirectoryPath, fileName);
+        var destination = Path.Combine(directoryPath, fileName);
         var temporaryArchive = destination + ".tmp";
         try
         {
@@ -181,20 +226,18 @@ internal sealed class BackupService
             var validation = await ValidateArchiveAsync(
                 temporaryArchive, password, scratch, cancellationToken).ConfigureAwait(false);
             File.Move(temporaryArchive, destination, overwrite: false);
-            await SaveSuccessAsync(destination, now, cancellationToken).ConfigureAwait(false);
-            var cleanupFailures = await CleanupRetentionAsync(
-                settings.DirectoryPath, settings, cancellationToken).ConfigureAwait(false);
-            var message = cleanupFailures.Count == 0
-                ? "密码保护备份已生成并通过完整性、版本和可打开性校验。"
-                : $"密码保护备份已验证，但有 {cleanupFailures.Count} 个过期文件无法清理；请检查磁盘空间或文件占用。";
-            if (cleanupFailures.Count > 0)
-                await SaveErrorAsync(message, CancellationToken.None).ConfigureAwait(false);
-            return new(true, message,
+            return new(true, "密码保护备份已生成并通过完整性、版本和可打开性校验。",
                 destination, kind, now, validation.DatabaseVersion, true);
         }
         catch (Exception exception)
         {
-            await SaveErrorAsync(exception.Message, CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                await SaveErrorAsync(exception.Message, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
             throw;
         }
         finally

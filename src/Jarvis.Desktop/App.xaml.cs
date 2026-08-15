@@ -12,9 +12,18 @@ public partial class App : Application
     private bool _ownsSingleInstance;
     private DesktopPetWindow? _desktopPet;
 
-    protected override void OnStartup(StartupEventArgs eventArgs)
+    protected override async void OnStartup(StartupEventArgs eventArgs)
     {
         base.OnStartup(eventArgs);
+
+        if (eventArgs.Args.Any(argument => string.Equals(
+                argument, "--health-check", StringComparison.OrdinalIgnoreCase)))
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var response = await new CoreClient()
+                .SendAsync(new CoreRequest(CoreOperations.GetSnapshot), timeout.Token);
+            Environment.Exit(response.Success && response.Snapshot is not null ? 0 : 2);
+        }
 
         var mutexName = $"Local\\{CoreProtocol.PipeName}.Desktop.SingleInstance";
         _singleInstance = new Mutex(initiallyOwned: true, mutexName, out var isFirstInstance);

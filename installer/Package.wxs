@@ -2,7 +2,7 @@
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Jarvis"
            Manufacturer="Jarvis"
-           Version="0.1.0"
+           Version="$(var.ProductVersion)"
            Language="2052"
            Scope="perUser"
            UpgradeCode="{09CDE4F3-8E10-49E2-87CA-57E267C5E1F8}">
