@@ -8,6 +8,7 @@ using Xunit;
 
 namespace Jarvis.Core.Tests;
 
+[Collection(WpfTestCollection.Name)]
 public sealed class DesktopRevisionPresentationScenarios
 {
     [Fact]

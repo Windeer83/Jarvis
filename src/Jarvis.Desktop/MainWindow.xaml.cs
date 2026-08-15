@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 using Jarvis.Contracts;
 
@@ -421,7 +422,8 @@ public partial class MainWindow : Window
 
     private async void ConfirmOfflineButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        var commitment = SelectedCommitment();
+        if (commitment is null)
         {
             return;
         }
@@ -513,7 +515,7 @@ public partial class MainWindow : Window
 
     private void CommitmentGrid_SelectionChanged(object sender, SelectionChangedEventArgs eventArgs)
     {
-        var selected = CommitmentGrid.SelectedItem as CommitmentView;
+        var selected = SelectedCommitment();
         ConfirmOfflineButton.IsEnabled = selected is
         {
             Kind: CommitmentKind.Offline,
@@ -527,7 +529,8 @@ public partial class MainWindow : Window
 
     private void ReviseCommitmentButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        var commitment = SelectedCommitment();
+        if (commitment is null)
         {
             SetOperationStatus("请先在正式状态中选择一条工作承诺。", isError: true);
             return;
@@ -544,7 +547,8 @@ public partial class MainWindow : Window
 
     private async void ViewHistoryButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        var commitment = SelectedCommitment();
+        if (commitment is null)
         {
             SetOperationStatus("请先在正式状态中选择一条工作承诺。", isError: true);
             return;
@@ -718,6 +722,7 @@ public partial class MainWindow : Window
                 CommitmentGrid.SelectedItem = null;
                 ConfirmOfflineButton.IsEnabled = false;
                 LatestReminderText.Text = "";
+                _snapshot = null;
                 ClearCompanionProjection();
                 ClearSupervisionProjection();
                 return;
@@ -740,8 +745,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        CommitmentGrid.ItemsSource = snapshot.Commitments;
         _snapshot = snapshot;
+        RefreshCommitmentGridRows();
         var active = snapshot.Commitments.SingleOrDefault(commitment =>
             commitment.Id == snapshot.ActiveComputerCommitmentId);
         ProjectionText.Text = active is null
@@ -1424,7 +1429,8 @@ public partial class MainWindow : Window
 
     private async void EndSelectedCommitmentButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        var commitment = SelectedCommitment();
+        if (commitment is null)
         {
             SetOperationStatus("请先在正式状态中选择要提前结束的承诺。", isError: true);
             return;
@@ -1435,7 +1441,8 @@ public partial class MainWindow : Window
 
     private async void CancelSelectedCommitmentButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        var commitment = SelectedCommitment();
+        if (commitment is null)
         {
             SetOperationStatus("请先在正式状态中选择要取消的承诺。", isError: true);
             return;
@@ -1455,7 +1462,8 @@ public partial class MainWindow : Window
 
     private async void DeferSelectedCommitmentButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        var commitment = SelectedCommitment();
+        if (commitment is null)
         {
             SetOperationStatus("请先在正式状态中选择要推迟的进行中承诺。", isError: true);
             return;
@@ -1643,6 +1651,7 @@ public partial class MainWindow : Window
     {
         if (snapshot is null) return;
         _companionSnapshot = snapshot;
+        RefreshCommitmentGridRows();
         _naturalLanguageCandidate = snapshot.PendingCandidate;
 
         var ai = snapshot.Ai;
@@ -1688,6 +1697,7 @@ public partial class MainWindow : Window
             (actionableChoices.Length == 1 ? actionableChoices[0] : null);
         DailyReviewTimeBox.Text = snapshot.DailyReview.ScheduledLocalTime.ToString("HH:mm", CultureInfo.InvariantCulture);
         DailyReviewQuestionText.Text = snapshot.DailyReview.FactsSummary + "\n\n" + DailyQuestion(snapshot.DailyReview);
+        DailyReviewRecordText.Text = DailyReviewRecordPresentation.Format(snapshot.DailyReview);
 
         var cycle = snapshot.CycleReview;
         CycleIntervalBox.Text = cycle.IntervalDays.ToString(CultureInfo.InvariantCulture);
@@ -1869,7 +1879,6 @@ public partial class MainWindow : Window
 
     private void ClearSupervisionProjection()
     {
-        _snapshot = null;
         SupervisionPanel.Visibility = Visibility.Collapsed;
         CurrentRelatedButton.Content = "本次活动相关";
         CurrentDistractingButton.Content = "本次活动分心";
@@ -1888,11 +1897,63 @@ public partial class MainWindow : Window
         var reviewId = (CommitmentReviewList.SelectedItem as CommitmentReviewChoice)?.Review.CommitmentId;
         if (reviewId is not null)
         {
-            return (_snapshot?.Commitments ?? CommitmentGrid.Items.Cast<CommitmentView>().ToArray())
+            return (_snapshot?.Commitments ?? [])
                 .SingleOrDefault(item => item.Id == reviewId.Value);
         }
 
-        return CommitmentGrid.SelectedItem as CommitmentView;
+        return SelectedCommitment();
+    }
+
+    private CommitmentView? SelectedCommitment() =>
+        (CommitmentGrid.SelectedItem as CommitmentGridRow)?.Commitment ??
+        CommitmentGrid.SelectedItem as CommitmentView;
+
+    private void RefreshCommitmentGridRows()
+    {
+        var selectedId = SelectedCommitment()?.Id;
+        if (_snapshot is null)
+        {
+            CommitmentGrid.ItemsSource = null;
+            return;
+        }
+
+        var reviews = (_companionSnapshot?.CommitmentReviews ?? [])
+            .GroupBy(item => item.CommitmentId)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.RequestedAt).First());
+        var rows = _snapshot.Commitments.Select(commitment =>
+        {
+            reviews.TryGetValue(commitment.Id, out var review);
+            var reviewStatus = review is not null
+                ? ReviewStatus(review)
+                : commitment.Phase == CommitmentPhase.AwaitingReview ? "待回顾" : "—";
+            var supervisionStatus = commitment.Phase == CommitmentPhase.AwaitingReview &&
+                                    review?.State == CommitmentReviewState.Completed
+                ? "监督已结束"
+                : PhaseText(commitment.Phase);
+            return new CommitmentGridRow(commitment, supervisionStatus, reviewStatus);
+        }).ToArray();
+        CommitmentGrid.ItemsSource = rows;
+        CommitmentGrid.SelectedItem = rows.SingleOrDefault(item => item.Commitment.Id == selectedId);
+    }
+
+    private static string ReviewStatus(CommitmentReviewView review) => review.State switch
+    {
+        CommitmentReviewState.Completed => review.Assessment switch
+        {
+            CompletionAssessment.Completed => "已回顾 · 已完成",
+            CompletionAssessment.Partial => "已回顾 · 部分完成",
+            CompletionAssessment.NotCompleted => "已回顾 · 未完成",
+            _ => "已回顾"
+        },
+        CommitmentReviewState.Deferred => "稍后回顾",
+        CommitmentReviewState.Skipped => "已跳过回顾",
+        _ => "待回顾"
+    };
+
+    private void CommitmentGrid_PreviewMouseWheel(object sender, MouseWheelEventArgs eventArgs)
+    {
+        eventArgs.Handled = true;
+        ContentScrollViewer.ScrollToVerticalOffset(ContentScrollViewer.VerticalOffset - eventArgs.Delta);
     }
 
     public void RestoreConfigurationWindow()
@@ -1935,6 +1996,59 @@ public partial class MainWindow : Window
     {
         public override string ToString() => Label;
     }
+
+    private sealed record CommitmentGridRow(
+        CommitmentView Commitment,
+        string SupervisionStatus,
+        string ReviewStatus);
+}
+
+public static class DailyReviewRecordPresentation
+{
+    public static string Format(DailyReviewView review)
+    {
+        if (review.SessionId is null || review.ReviewDate is null)
+        {
+            return "尚无每日复盘记录。";
+        }
+
+        var lines = new List<string>
+        {
+            $"{review.ReviewDate:yyyy-MM-dd} · {StateText(review.State)}"
+        };
+        if (review.AnswerDetails.Count == 0)
+        {
+            lines.Add("尚无原始回答。");
+        }
+        else
+        {
+            lines.AddRange(review.AnswerDetails.Select(item =>
+                $"• {QuestionText(item.Question)}：{item.RawText}（{item.AnsweredAt.ToLocalTime():HH:mm}）"));
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string StateText(ReviewSessionState state) => state switch
+    {
+        ReviewSessionState.Completed => "已完成",
+        ReviewSessionState.Skipped => "已跳过",
+        ReviewSessionState.NoResponse => "未回应",
+        ReviewSessionState.InProgress => "进行中",
+        ReviewSessionState.Snoozed => "已稍后",
+        _ => state.ToString()
+    };
+
+    private static string QuestionText(ReviewQuestionKind question) => question switch
+    {
+        ReviewQuestionKind.Facts => "今天实际完成",
+        ReviewQuestionKind.PendingCommitments => "待回顾承诺",
+        ReviewQuestionKind.WhatWentWell => "做得好的地方",
+        ReviewQuestionKind.WhatWentPoorly => "不理想之处",
+        ReviewQuestionKind.Reasons => "原因",
+        ReviewQuestionKind.TomorrowAdjustments => "明日调整",
+        _ => question.ToString()
+    };
 }
 
 public static class CandidateCardSummary

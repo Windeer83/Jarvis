@@ -431,6 +431,14 @@
                                     <Button Content="跳过" Padding="9,5" Margin="8,0,0,0" Click="SkipDailyReviewButton_Click" />
                                 </WrapPanel>
                                 <TextBlock x:Name="DailyReviewQuestionText" Margin="0,8,0,5" Text="每日复盘未到时间。" />
+                                <Border Background="#F7F9FC" BorderBrush="#D8DEE9" BorderThickness="1"
+                                        CornerRadius="6" Padding="8" Margin="0,0,0,8">
+                                    <StackPanel>
+                                        <TextBlock Text="最近一次每日复盘记录" FontWeight="SemiBold" />
+                                        <TextBlock x:Name="DailyReviewRecordText" Text="尚无每日复盘记录。"
+                                                   Margin="0,4,0,0" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Border>
                                 <WrapPanel>
                                     <TextBox x:Name="DailyReviewAnswerBox" Width="700" Padding="6" />
                                     <Button Content="回答并进入下一问" Padding="10,5" Margin="8,0,0,0"
@@ -497,14 +505,16 @@
                     <StackPanel>
                         <TextBlock x:Name="ProjectionText" Text="等待快照…" Margin="2,0,0,8" Foreground="#344054" />
                         <DataGrid x:Name="CommitmentGrid" AutoGenerateColumns="False" IsReadOnly="True"
-                                  SelectionMode="Single" Height="230" SelectionChanged="CommitmentGrid_SelectionChanged">
+                                  SelectionMode="Single" Height="230" SelectionChanged="CommitmentGrid_SelectionChanged"
+                                  PreviewMouseWheel="CommitmentGrid_PreviewMouseWheel">
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="类型" Binding="{Binding Kind}" Width="90" />
-                                <DataGridTextColumn Header="投入目标" Binding="{Binding InputGoal}" Width="*" />
-                                <DataGridTextColumn Header="成果目标" Binding="{Binding OutcomeGoal}" Width="*" />
-                                <DataGridTextColumn Header="开始" Binding="{Binding StartAt.LocalDateTime, StringFormat={}{0:MM-dd HH:mm}}" Width="120" />
-                                <DataGridTextColumn Header="结束" Binding="{Binding EndAt.LocalDateTime, StringFormat={}{0:MM-dd HH:mm}}" Width="120" />
-                                <DataGridTextColumn Header="状态" Binding="{Binding Phase}" Width="130" />
+                                <DataGridTextColumn Header="类型" Binding="{Binding Commitment.Kind}" Width="80" />
+                                <DataGridTextColumn Header="投入目标" Binding="{Binding Commitment.InputGoal}" Width="*" />
+                                <DataGridTextColumn Header="成果目标" Binding="{Binding Commitment.OutcomeGoal}" Width="*" />
+                                <DataGridTextColumn Header="开始" Binding="{Binding Commitment.StartAt.LocalDateTime, StringFormat={}{0:MM-dd HH:mm}}" Width="110" />
+                                <DataGridTextColumn Header="结束" Binding="{Binding Commitment.EndAt.LocalDateTime, StringFormat={}{0:MM-dd HH:mm}}" Width="110" />
+                                <DataGridTextColumn Header="监督阶段" Binding="{Binding SupervisionStatus}" Width="115" />
+                                <DataGridTextColumn Header="回顾结果" Binding="{Binding ReviewStatus}" Width="150" />
                             </DataGrid.Columns>
                         </DataGrid>
                         <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
