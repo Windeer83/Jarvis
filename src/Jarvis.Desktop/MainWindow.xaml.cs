@@ -14,6 +14,8 @@ public partial class MainWindow : Window
     private readonly CoreClient _coreClient = new();
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly ReminderOverlayWindow _reminderOverlay = new();
+    private readonly WindowsSpeechService _speechService = new();
+    private readonly VoiceSettingsStore _voiceSettingsStore = new();
     private CommitmentCard? _candidate;
     private RecurrenceCard? _recurrenceCandidate;
     private RecurrenceChangeCard? _recurrenceChangeCandidate;
@@ -32,6 +34,7 @@ public partial class MainWindow : Window
     private bool _naturalLanguageBusy;
     private bool _aiReviewBusy;
     private bool _applicationExit;
+    private VoicePresentationSettings _voiceSettings = new();
 
     public event EventHandler<DesktopPetProjection>? DesktopPetProjectionChanged;
     public event EventHandler<CompanionPersonaSettingsChangedEventArgs>? CompanionPersonaSettingsChanged;
@@ -55,6 +58,11 @@ public partial class MainWindow : Window
         CompletionAssessmentBox.SelectedItem = CompletionAssessment.Completed;
         AiModelPreferenceBox.ItemsSource = Enum.GetValues<AiModelPreference>();
         AiModelPreferenceBox.SelectedItem = AiModelPreference.Flash;
+        VoiceTargetBox.ItemsSource = VoiceInputTargetOption.All;
+        VoiceTargetBox.SelectedIndex = 0;
+        _voiceSettings = _voiceSettingsStore.Load();
+        VoiceGlobalMuteBox.IsChecked = _voiceSettings.GlobalMute;
+        VoiceHeadphonesOnlyBox.IsChecked = _voiceSettings.HeadphonesOnly;
 
         var suggestedStart = DateTime.Now.AddMinutes(5);
         StartDatePicker.SelectedDate = suggestedStart.Date;
@@ -1320,6 +1328,11 @@ public partial class MainWindow : Window
 
     private async void InterpretNaturalLanguageButton_Click(object sender, RoutedEventArgs eventArgs)
     {
+        await GenerateNaturalLanguageCandidateAsync();
+    }
+
+    private async Task GenerateNaturalLanguageCandidateAsync()
+    {
         if (_naturalLanguageBusy) return;
         SetNaturalLanguageBusy(true);
         try
@@ -1409,6 +1422,11 @@ public partial class MainWindow : Window
 
     private async void SendAiChatButton_Click(object sender, RoutedEventArgs eventArgs)
     {
+        await SendAiChatFromBoxAsync(speakResponse: false);
+    }
+
+    private async Task SendAiChatFromBoxAsync(bool speakResponse)
+    {
         var command = new RequestAiChatCommand(AiChatBox.Text);
         var outcome = await SendCompanionAsync(command);
         if (outcome?.ErrorCode == "ai_cost_confirmation_required")
@@ -1419,9 +1437,148 @@ public partial class MainWindow : Window
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Question);
             if (confirmation == MessageBoxResult.Yes)
-                await SendCompanionAsync(command with { ApprovedEstimatedCostOverOneCny = true });
+                outcome = await SendCompanionAsync(command with { ApprovedEstimatedCostOverOneCny = true });
+        }
+
+        if (speakResponse && outcome is { Success: true, AssistantText.Length: > 0 })
+        {
+            var result = await _speechService.SpeakAsync(
+                outcome.AssistantText,
+                _voiceSettings,
+                PrivateVoicePresentationSuppressed());
+            VoiceStatusText.Text = result.Message;
         }
     }
+
+    private async void StartVoiceCaptureButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_speechService.IsListening) return;
+        StartVoiceCaptureButton.IsEnabled = false;
+        StopVoiceCaptureButton.IsEnabled = true;
+        ConfirmVoiceTranscriptButton.IsEnabled = false;
+        VoiceStatusText.Text = "正在听取本次语音；说完后点击“结束录音”。";
+        var capture = _speechService.StartCaptureAsync();
+        if (await Task.WhenAny(capture, Task.Delay(TimeSpan.FromMinutes(1))) != capture)
+        {
+            VoiceStatusText.Text = "本次录音已达到 60 秒上限，正在停止并整理转写……";
+            _speechService.StopCapture();
+        }
+        var result = await capture;
+        if (_applicationExit) return;
+        StartVoiceCaptureButton.IsEnabled = true;
+        StopVoiceCaptureButton.IsEnabled = false;
+        ConfirmVoiceTranscriptButton.IsEnabled = true;
+        if (result.Text.Length > 0) VoiceTranscriptBox.Text = result.Text;
+        VoiceStatusText.Text = result.Message;
+    }
+
+    private void StopVoiceCaptureButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        VoiceStatusText.Text = "正在结束录音并整理转写……";
+        _speechService.StopCapture();
+    }
+
+    private async void ConfirmVoiceTranscriptButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var text = VoiceTranscriptBox.Text.Trim();
+        if (text.Length == 0)
+        {
+            VoiceStatusText.Text = "转写为空；请重新说话或直接输入文字。";
+            return;
+        }
+        if (VoiceTargetBox.SelectedItem is not VoiceInputTargetOption option)
+        {
+            VoiceStatusText.Text = "请先选择这段语音要用于哪个文字入口。";
+            return;
+        }
+
+        ConfirmVoiceTranscriptButton.IsEnabled = false;
+        try
+        {
+            switch (option.Target)
+            {
+                case VoiceInputTarget.BasicChat:
+                    AiChatBox.Text = text;
+                    CompanionTabs.SelectedIndex = 0;
+                    await SendAiChatFromBoxAsync(speakResponse: true);
+                    break;
+                case VoiceInputTarget.NaturalLanguageOperation:
+                    NaturalLanguageBox.Text = text;
+                    CompanionTabs.SelectedIndex = 0;
+                    await GenerateNaturalLanguageCandidateAsync();
+                    VoiceStatusText.Text = "转写已用于生成候选；请核对候选卡后再确认。";
+                    break;
+                case VoiceInputTarget.CommitmentReview:
+                    CommitmentReviewTextBox.Text = text;
+                    CompanionTabs.SelectedIndex = 4;
+                    VoiceStatusText.Text = "转写已填入承诺回顾；请核对完成判断后点击“提交回顾”。";
+                    break;
+                case VoiceInputTarget.DailyReview:
+                    DailyReviewAnswerBox.Text = text;
+                    CompanionTabs.SelectedIndex = 4;
+                    VoiceStatusText.Text = "转写已填入每日复盘回答；请核对后点击“回答并进入下一问”。";
+                    break;
+            }
+        }
+        finally
+        {
+            ConfirmVoiceTranscriptButton.IsEnabled = true;
+        }
+    }
+
+    private void ClearVoiceTranscriptButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        VoiceTranscriptBox.Clear();
+        VoiceStatusText.Text = "转写已清空；没有保存原始录音。";
+    }
+
+    private void VoiceSettings_Changed(object sender, RoutedEventArgs eventArgs)
+    {
+        _voiceSettings = _voiceSettings with
+        {
+            GlobalMute = VoiceGlobalMuteBox.IsChecked == true,
+            HeadphonesOnly = VoiceHeadphonesOnlyBox.IsChecked == true
+        };
+        SaveVoiceSettings();
+    }
+
+    private void TemporaryMuteVoiceButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        _speechService.StopSpeaking();
+        _voiceSettings = _voiceSettings with { TemporaryMuteUntil = DateTimeOffset.Now.AddMinutes(30) };
+        SaveVoiceSettings();
+        VoiceStatusText.Text = $"已临时静音到 {_voiceSettings.TemporaryMuteUntil:HH:mm}；文字仍会显示。";
+    }
+
+    private void ClearTemporaryMuteVoiceButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        _voiceSettings = _voiceSettings with { TemporaryMuteUntil = null };
+        SaveVoiceSettings();
+        VoiceStatusText.Text = "临时静音已取消。";
+    }
+
+    private void StopSpeakingButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        _speechService.StopSpeaking();
+        VoiceStatusText.Text = "已停止朗读；文字内容保持不变。";
+    }
+
+    private void SaveVoiceSettings()
+    {
+        try
+        {
+            _voiceSettingsStore.Save(_voiceSettings);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            VoiceStatusText.Text = $"语音呈现设置暂时无法保存：{exception.Message}";
+        }
+    }
+
+    private bool PrivateVoicePresentationSuppressed() =>
+        QuietModeBox.IsChecked == true ||
+        ForegroundPresentationDetector.IsFullscreen() ||
+        (_companionSnapshot?.PersonaProjection.Settings.ProfessionalMode ?? false);
 
     private async void SaveCompanionPersonaButton_Click(object sender, RoutedEventArgs eventArgs) =>
         await SendCompanionAsync(new ConfigureCompanionPersonaCommand(ReadPersonaSettingsFromForm()));
@@ -2298,6 +2455,7 @@ public partial class MainWindow : Window
         }
 
         _applicationExit = true;
+        _speechService.Dispose();
         _refreshTimer.Stop();
         _reminderOverlay.Close();
     }

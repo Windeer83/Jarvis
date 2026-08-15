@@ -423,6 +423,48 @@
                                            Foreground="#4A5568" TextWrapping="Wrap" />
                             </StackPanel>
                         </TabItem>
+                        <TabItem Header="主动语音（T24）">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="只有点击“开始说话”后才使用麦克风；转写可编辑，确认前不会提交。原始录音不写文件、不进入数据库。"
+                                           Foreground="#4A5568" TextWrapping="Wrap" />
+                                <WrapPanel Margin="0,10,0,8">
+                                    <TextBlock Text="语音用于" VerticalAlignment="Center" />
+                                    <ComboBox x:Name="VoiceTargetBox" Width="330" Margin="8,0,10,0"
+                                              DisplayMemberPath="Label" />
+                                    <Button x:Name="StartVoiceCaptureButton" Content="开始说话" Padding="12,5"
+                                            Margin="0,0,8,0" Click="StartVoiceCaptureButton_Click" />
+                                    <Button x:Name="StopVoiceCaptureButton" Content="结束录音" Padding="12,5"
+                                            IsEnabled="False" Click="StopVoiceCaptureButton_Click" />
+                                </WrapPanel>
+                                <TextBox x:Name="VoiceTranscriptBox" Height="95" AcceptsReturn="True"
+                                         TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="8"
+                                         ToolTip="识别完成后请核对或修改；只有下方确认按钮会继续。" />
+                                <WrapPanel Margin="0,8,0,8">
+                                    <Button x:Name="ConfirmVoiceTranscriptButton" Content="确认转写并继续"
+                                            Padding="12,5" Margin="0,0,8,0"
+                                            Click="ConfirmVoiceTranscriptButton_Click" />
+                                    <Button Content="清空转写" Padding="12,5" Margin="0,0,14,0"
+                                            Click="ClearVoiceTranscriptButton_Click" />
+                                    <CheckBox x:Name="VoiceGlobalMuteBox" Content="全局静音" Margin="0,0,14,0"
+                                              VerticalAlignment="Center" Checked="VoiceSettings_Changed"
+                                              Unchecked="VoiceSettings_Changed" />
+                                    <CheckBox x:Name="VoiceHeadphonesOnlyBox" Content="仅确认默认设备为耳机时播放"
+                                              VerticalAlignment="Center" Checked="VoiceSettings_Changed"
+                                              Unchecked="VoiceSettings_Changed" />
+                                </WrapPanel>
+                                <WrapPanel>
+                                    <Button Content="临时静音 30 分钟" Padding="10,5" Margin="0,0,8,0"
+                                            Click="TemporaryMuteVoiceButton_Click" />
+                                    <Button Content="取消临时静音" Padding="10,5" Margin="0,0,8,0"
+                                            Click="ClearTemporaryMuteVoiceButton_Click" />
+                                    <Button Content="停止朗读" Padding="10,5" Click="StopSpeakingButton_Click" />
+                                </WrapPanel>
+                                <TextBlock x:Name="VoiceStatusText" Text="语音输入未启动；始终可以使用原有文字输入。"
+                                           Margin="0,10,0,0" Foreground="#4A5568" TextWrapping="Wrap" />
+                                <TextBlock Text="朗读只用于用户主动发起的本轮普通对话；监督提醒不会突然朗读。专业/安静/全屏边界下仅显示文字。"
+                                           Margin="0,6,0,0" Foreground="#7A4E00" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </TabItem>
                         <TabItem Header="飞书手机闭环">
                             <StackPanel Margin="10">
                                 <WrapPanel>
