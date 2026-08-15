@@ -197,6 +197,42 @@ public sealed class DesktopRevisionPresentationScenarios
     }
 
     [Fact]
+    public void Revision_form_roundtrip_does_not_change_an_active_start_with_seconds()
+    {
+        RunOnStaThread(() =>
+        {
+            var window = new MainWindow();
+            try
+            {
+                var start = DateTimeOffset.Parse("2026-08-15T15:09:37+08:00");
+                var target = new CommitmentTarget(CommitmentTargetKind.Application, "notion");
+                var commitment = new CommitmentView(
+                    Guid.NewGuid(), CommitmentKind.Computer, start, start.AddMinutes(25),
+                    "交易的复盘", null, [target], SupervisionMode.Interactive,
+                    new ReminderSettings(true, 2, 5, 5, 3),
+                    CommitmentPhase.Supervising, start.AddMinutes(-2), null,
+                    [new ActivityRule(target, ActivityClassification.Related)],
+                    new RestSettings(3, 15));
+
+                InvokePrivate(window, "EnterRevisionMode", commitment);
+                var arguments = new object?[] { null, null };
+                var succeeded = (bool)window.GetType()
+                    .GetMethod("TryBuildDraft", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(window, arguments)!;
+                var roundTripped = Assert.IsType<CommitmentDraft>(arguments[0]);
+
+                Assert.True(succeeded, Assert.IsType<string>(arguments[1]));
+                Assert.Equal(start, roundTripped.StartAt);
+            }
+            finally
+            {
+                window.StopForApplicationExit();
+                window.Hide();
+            }
+        });
+    }
+
+    [Fact]
     public void Recurrence_adjustment_shows_reason_and_versions_but_skip_stays_a_status_fact()
     {
         var commitmentId = Guid.NewGuid();

@@ -839,6 +839,13 @@ public partial class MainWindow : Window
             return false;
         }
 
+        // Active revisions cannot edit this disabled field. Keep the Core timestamp exactly,
+        // including seconds that the HH:mm form intentionally does not display.
+        if (_revisionSource is { Phase: not CommitmentPhase.Scheduled } revisionSource)
+        {
+            startAt = revisionSource.StartAt;
+        }
+
         var kind = SelectedKind();
         var targets = kind == CommitmentKind.Computer
             ? ParseTargets()
