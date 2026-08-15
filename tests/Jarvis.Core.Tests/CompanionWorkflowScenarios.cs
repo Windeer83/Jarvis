@@ -226,7 +226,9 @@ public sealed class CompanionWorkflowScenarios
 
         Assert.True((await companion.DispatchAsync(new SaveAiCredentialCommand(key))).Success);
         var status = (await companion.SnapshotAsync()).Ai;
-        Assert.Equal("deepseek-v4-flash", status.Model);
+        Assert.Equal("SiliconFlow", status.Provider);
+        Assert.Contains("DeepSeek-V4-Flash", status.Model, StringComparison.Ordinal);
+        Assert.Contains("DeepSeek-V4-Pro", status.Model, StringComparison.Ordinal);
         Assert.Equal("9876", status.CredentialLastFour);
 
         var chat = await companion.DispatchAsync(new RequestAiChatCommand("你好，帮我简短整理今天的重点。"));
@@ -238,6 +240,58 @@ public sealed class CompanionWorkflowScenarios
         var needsApproval = await companion.DispatchAsync(new RequestAiChatCommand("进行较长分析"));
         Assert.False(needsApproval.Success);
         Assert.Equal("ai_cost_confirmation_required", needsApproval.ErrorCode);
+    }
+
+    [Fact]
+    public async Task SiliconFlow_routes_chat_to_flash_and_complex_operations_to_pro()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        var activity = new FakeActivitySource();
+        await using var supervision = await SupervisionModule.OpenAsync(
+            database.Path, clock, activity, new FakeReminderSink());
+        var provider = new FakeAiProvider();
+        await using var companion = await CompanionModule.OpenAsync(
+            database.Path, supervision, clock, new FakeWorktimeChannel(), provider,
+            new FakeCredentialStore());
+        await companion.DispatchAsync(new SaveAiCredentialCommand("sk-siliconflow-test"));
+
+        var chat = await companion.DispatchAsync(new RequestAiChatCommand("你好"));
+
+        Assert.True(chat.Success);
+        Assert.Equal("deepseek-ai/DeepSeek-V4-Flash", provider.LastRequest!.Model);
+
+        await companion.DispatchAsync(new InterpretNaturalLanguageCommand(
+            "明天下午三点安排一小时复盘",
+            CandidateSource.Desktop));
+
+        Assert.Equal("deepseek-ai/DeepSeek-V4-Pro", provider.LastRequest!.Model);
+        var snapshot = await companion.SnapshotAsync();
+        Assert.Equal("SiliconFlow", snapshot.Ai.Provider);
+        Assert.Contains("DeepSeek-V4-Flash", snapshot.Ai.Model, StringComparison.Ordinal);
+        Assert.Contains("DeepSeek-V4-Pro", snapshot.Ai.Model, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Existing_DeepSeek_credential_entry_is_reused_for_SiliconFlow_after_upgrade()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(Start);
+        await using var supervision = await SupervisionModule.OpenAsync(
+            database.Path, clock, new FakeActivitySource(), new FakeReminderSink());
+        var provider = new FakeAiProvider();
+        var credentials = new FakeCredentialStore();
+        await credentials.SaveAsync("deepseek", "sk-existing-siliconflow-4321", CancellationToken.None);
+        await using var companion = await CompanionModule.OpenAsync(
+            database.Path, supervision, clock, new FakeWorktimeChannel(), provider, credentials);
+
+        var snapshot = await companion.SnapshotAsync();
+        var outcome = await companion.DispatchAsync(new RequestAiChatCommand("继续使用旧凭据"));
+
+        Assert.True(snapshot.Ai.Enabled);
+        Assert.Equal("4321", snapshot.Ai.CredentialLastFour);
+        Assert.True(outcome.Success);
+        Assert.Equal(1, provider.CallCount);
     }
 
     [Fact]
@@ -255,7 +309,8 @@ public sealed class CompanionWorkflowScenarios
             await companion.DispatchAsync(new SaveAiCredentialCommand("sk-test-1234"));
             var store = new SqliteCompanionStore(database.Path);
             Assert.True(await store.TryReserveAiRequestAsync(new AiRequestRecordView(
-                Guid.NewGuid(), clock.Now, AiRequestPurpose.BasicChat, "DeepSeek", "deepseek-v4-flash",
+                Guid.NewGuid(), clock.Now, AiRequestPurpose.BasicChat, "SiliconFlow",
+                "deepseek-ai/DeepSeek-V4-Flash",
                 0, 0, 0, "test", 30m, false), CancellationToken.None));
 
             var blocked = await companion.DispatchAsync(new RequestAiChatCommand("先不要调用云端"));
@@ -504,7 +559,79 @@ public sealed class CompanionWorkflowScenarios
     }
 
     [Fact]
-    public async Task DeepSeek_structured_output_can_create_a_template_candidate_without_executing_it()
+    public async Task SiliconFlow_provider_uses_its_endpoint_and_namespaced_flash_model()
+    {
+        var handler = new StubHttpHandler(JsonSerializer.Serialize(new
+        {
+            choices = new[] { new { message = new { content = "你好" } } },
+            usage = new
+            {
+                prompt_tokens = 12,
+                completion_tokens = 8,
+                prompt_cache_hit_tokens = 2
+            }
+        }));
+        using var provider = new SiliconFlowCloudAiProvider(new HttpClient(handler));
+
+        var result = await provider.CompleteAsync(
+            new AiProviderRequest(
+                AiRequestPurpose.BasicChat,
+                "你好",
+                "deepseek-ai/DeepSeek-V4-Flash",
+                256,
+                Start),
+            "sk-siliconflow-test",
+            CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            "https://api.siliconflow.cn/v1/chat/completions",
+            handler.RequestUri?.AbsoluteUri);
+        using var request = JsonDocument.Parse(handler.RequestBody!);
+        Assert.Equal(
+            "deepseek-ai/DeepSeek-V4-Flash",
+            request.RootElement.GetProperty("model").GetString());
+        Assert.False(request.RootElement.GetProperty("enable_thinking").GetBoolean());
+    }
+
+    [Fact]
+    public async Task SiliconFlow_authentication_failure_is_provider_specific_and_does_not_echo_the_key()
+    {
+        var handler = new StubHttpHandler("Invalid token", HttpStatusCode.Unauthorized);
+        using var provider = new SiliconFlowCloudAiProvider(new HttpClient(handler));
+
+        var result = await provider.CompleteAsync(
+            new AiProviderRequest(
+                AiRequestPurpose.BasicChat,
+                "你好",
+                "deepseek-ai/DeepSeek-V4-Flash",
+                256,
+                Start),
+            "sk-secret-must-not-appear",
+            CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal("http_401", result.ErrorCode);
+        Assert.Contains("硅基流动", result.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("sk-secret-must-not-appear", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SiliconFlow_budget_uses_the_price_of_the_routed_model()
+    {
+        var usage = new AiTokenUsage(1_000_000, 1_000_000, 0);
+
+        var flash = SiliconFlowModelCatalog.CalculateCost(
+            SiliconFlowModelCatalog.Select(AiRequestPurpose.BasicChat), usage);
+        var pro = SiliconFlowModelCatalog.CalculateCost(
+            SiliconFlowModelCatalog.Select(AiRequestPurpose.CycleReviewAssist), usage);
+
+        Assert.Equal(3m, flash);
+        Assert.Equal(36m, pro);
+    }
+
+    [Fact]
+    public async Task SiliconFlow_structured_output_can_create_a_template_candidate_without_executing_it()
     {
         var template = new CommitmentTemplateDraft(
             "报告模板", CommitmentKind.Computer, 60, "写报告", "形成初稿",
@@ -526,13 +653,13 @@ public sealed class CompanionWorkflowScenarios
             choices = new[] { new { message = new { content } } },
             usage = new { prompt_tokens = 120, completion_tokens = 80, prompt_cache_hit_tokens = 20 }
         }));
-        using var provider = new DeepSeekCloudAiProvider(new HttpClient(handler));
+        using var provider = new SiliconFlowCloudAiProvider(new HttpClient(handler));
 
         var result = await provider.CompleteAsync(
             new AiProviderRequest(
                 AiRequestPurpose.NaturalLanguageOperation,
                 "保存一个报告模板",
-                "deepseek-v4-flash",
+                "deepseek-ai/DeepSeek-V4-Pro",
                 2048,
                 Start),
             "sk-test-secret",
@@ -546,13 +673,13 @@ public sealed class CompanionWorkflowScenarios
     }
 
     [Fact]
-    public async Task DeepSeek_ambiguity_is_returned_as_a_clarification_instead_of_an_invalid_candidate()
+    public async Task SiliconFlow_ambiguity_is_returned_as_a_clarification_instead_of_an_invalid_candidate()
     {
         var content = JsonSerializer.Serialize(new
         {
             needsClarification = "你说的下午是 15:00 吗？持续多久？"
         });
-        using var provider = new DeepSeekCloudAiProvider(new HttpClient(new StubHttpHandler(
+        using var provider = new SiliconFlowCloudAiProvider(new HttpClient(new StubHttpHandler(
             JsonSerializer.Serialize(new
             {
                 choices = new[] { new { message = new { content } } },
@@ -561,7 +688,8 @@ public sealed class CompanionWorkflowScenarios
 
         var result = await provider.CompleteAsync(
             new AiProviderRequest(
-                AiRequestPurpose.NaturalLanguageOperation, "下午写报告", "deepseek-v4-flash", 500, Start),
+                AiRequestPurpose.NaturalLanguageOperation, "下午写报告",
+                "deepseek-ai/DeepSeek-V4-Pro", 500, Start),
             "sk-test", CancellationToken.None);
 
         Assert.False(result.Success);
@@ -874,9 +1002,9 @@ public sealed class CompanionWorkflowScenarios
     }
 
     [Fact]
-    public async Task DeepSeek_invalid_candidate_still_reports_the_billable_usage()
+    public async Task SiliconFlow_invalid_candidate_still_reports_the_billable_usage()
     {
-        using var provider = new DeepSeekCloudAiProvider(new HttpClient(new StubHttpHandler(
+        using var provider = new SiliconFlowCloudAiProvider(new HttpClient(new StubHttpHandler(
             JsonSerializer.Serialize(new
             {
                 choices = new[] { new { message = new { content = "not-json" } } },
@@ -884,7 +1012,8 @@ public sealed class CompanionWorkflowScenarios
             }))));
         var result = await provider.CompleteAsync(
             new AiProviderRequest(
-                AiRequestPurpose.NaturalLanguageOperation, "创建承诺", "deepseek-v4-flash", 500, Start),
+                AiRequestPurpose.NaturalLanguageOperation, "创建承诺",
+                "deepseek-ai/DeepSeek-V4-Pro", 500, Start),
             "sk-test", CancellationToken.None);
         Assert.False(result.Success);
         Assert.Equal(321, result.Usage.InputTokens);
@@ -1195,20 +1324,20 @@ internal sealed class FakeWorktimeChannel : IWorktimeChannel
 
 internal sealed class FakeCredentialStore : IAiCredentialStore
 {
-    private string? _value;
+    private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
 
     public ValueTask SaveAsync(string provider, string secret, CancellationToken cancellationToken)
     {
-        _value = secret;
+        _values[provider] = secret;
         return ValueTask.CompletedTask;
     }
 
     public ValueTask<string?> ReadAsync(string provider, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(_value);
+        ValueTask.FromResult(_values.GetValueOrDefault(provider));
 
     public ValueTask DeleteAsync(string provider, CancellationToken cancellationToken)
     {
-        _value = null;
+        _values.Remove(provider);
         return ValueTask.CompletedTask;
     }
 }
@@ -1222,6 +1351,7 @@ internal sealed class FakeAiProvider : ICloudAiProvider
     public Exception? NextException { get; set; }
     public TaskCompletionSource<bool>? Started { get; set; }
     public TaskCompletionSource<bool>? Release { get; set; }
+    public AiProviderRequest? LastRequest { get; private set; }
 
     public decimal EstimateCostCny(AiProviderRequest request) =>
         EstimatedCostCny ?? 0.01m;
@@ -1230,6 +1360,7 @@ internal sealed class FakeAiProvider : ICloudAiProvider
         AiProviderRequest request, string credential, CancellationToken cancellationToken)
     {
         CallCount++;
+        LastRequest = request;
         if (NextException is not null) throw NextException;
         Started?.TrySetResult(true);
         if (Release is not null)
@@ -1244,10 +1375,13 @@ internal sealed class FakeAiProvider : ICloudAiProvider
     }
 }
 
-internal sealed class StubHttpHandler(string responseJson) : HttpMessageHandler
+internal sealed class StubHttpHandler(
+    string responseJson,
+    HttpStatusCode statusCode = HttpStatusCode.OK) : HttpMessageHandler
 {
     public string? RequestBody { get; private set; }
     public string? AuthorizationScheme { get; private set; }
+    public Uri? RequestUri { get; private set; }
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
@@ -1255,7 +1389,8 @@ internal sealed class StubHttpHandler(string responseJson) : HttpMessageHandler
     {
         RequestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
         AuthorizationScheme = request.Headers.Authorization?.Scheme;
-        return new HttpResponseMessage(HttpStatusCode.OK)
+        RequestUri = request.RequestUri;
+        return new HttpResponseMessage(statusCode)
         {
             Content = new StringContent(responseJson, Encoding.UTF8, "application/json")
         };

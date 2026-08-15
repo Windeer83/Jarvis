@@ -29,13 +29,17 @@ AI 不参与活动分类、偏离计时、提醒阈值、版本检查、冲突�
 
 当前实现复用库存 `lark-cli` 的消息和事件能力。用户已经明确跳过 T04 剩余 Gate，因此本纵切不重新宣称 T04 的最小权限、额度或 30 分钟断网证据已经通过；特别是库存 CLI 监听卡片回调仍会要求它自身的消息只读 scope。这个限制不影响 T15–T20 的确定性 Core 设计，但正式发布前仍应由安装/权限任务收口。
 
-## DeepSeek 当前配置
+## 硅基流动 DeepSeek 当前配置
 
-2026-08-14 复核官方文档后，适配器使用 `deepseek-v4-flash`；旧的 `deepseek-chat` 与 `deepseek-reasoner` 已于 2026-07-24 退役。当前人民币计费为缓存命中输入 0.02 元/百万 tokens、缓存未命中输入 1 元/百万 tokens、输出 2 元/百万 tokens。来源：
+2026-08-15 按用户确认改为统一使用硅基流动账号与密钥。普通对话调用 `deepseek-ai/DeepSeek-V4-Flash` 并关闭思考模式；自然语言候选操作、每日复盘辅助和周期复盘辅助调用 `deepseek-ai/DeepSeek-V4-Pro`。请求固定发送到 `https://api.siliconflow.cn/v1/chat/completions`，不会把硅基流动密钥发送到 DeepSeek 官方端点。
 
-- [DeepSeek 模型与价格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)
-- [DeepSeek Chat Completion API](https://api-docs.deepseek.com/api/create-chat-completion)
-- [DeepSeek 隐私政策](https://platform.deepseek.com/downloads/DeepSeek%20Privacy%20Policy.pdf)
+当前人民币单价为：Flash 缓存命中输入 0.02 元、普通输入 1 元、输出 2 元/百万 tokens；Pro 分别为 1 元、12 元和 24 元/百万 tokens。来源：
+
+- [硅基流动 Chat Completions API](https://api-docs.siliconflow.cn/docs/api/chat-completions-post)
+- [硅基流动模型与价格](https://siliconflow.cn/pricing)
+- [硅基流动隐私政策](https://api-docs.siliconflow.cn/docs/legals/privacy-policy)
+
+旧版已经保存到 `Jarvis/AI/deepseek` 凭据槽的密钥会被兼容读取；新保存使用 `Jarvis/AI/siliconflow`。两者都不进入 SQLite、日志或备份。
 
 Jarvis 本机月度硬上限默认为 30 元，15 元和 24 元显示预警；单次估算超过 1 元必须再次确认。达到上限后不自动充值、不自动切换供应商；只有用户在 Desktop 明确确认提高硬上限后才恢复请求。Provider、模型、费用、凭据末四位和云端请求处理中状态均可见。
 

@@ -7,9 +7,8 @@ namespace Jarvis.Core;
 
 internal sealed class CompanionModule : IAsyncDisposable
 {
-    private const string ProviderName = "DeepSeek";
-    private const string ModelName = "deepseek-v4-flash";
-    private const string PriceVersion = "2026-04-24";
+    private const string CredentialKey = "siliconflow";
+    private const string LegacyCredentialKey = "deepseek";
     private readonly SqliteCompanionStore _store;
     private readonly SupervisionModule _supervision;
     private readonly IClock _clock;
@@ -187,8 +186,7 @@ internal sealed class CompanionModule : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var settings = await _store.ReadWorktimeSettingsAsync(cancellationToken).ConfigureAwait(false);
-        var currentCredential = await _credentialStore.ReadAsync("deepseek", cancellationToken)
-            .ConfigureAwait(false);
+        var currentCredential = await ReadAiCredentialAsync(cancellationToken).ConfigureAwait(false);
         var lastFour = string.IsNullOrEmpty(currentCredential) ? null : currentCredential[^Math.Min(4, currentCredential.Length)..];
         var spend = await _store.ReadMonthSpendAsync(_clock.Now, cancellationToken).ConfigureAwait(false);
         var hardCap = await _store.ReadAiMonthlyHardCapAsync(cancellationToken).ConfigureAwait(false);
@@ -210,7 +208,8 @@ internal sealed class CompanionModule : IAsyncDisposable
             dailyReview,
             await _store.ReadCycleReviewAsync(cancellationToken).ConfigureAwait(false),
             new AiStatusView(
-                lastFour is not null, ProviderName, ModelName, lastFour, spend, hardCap,
+                lastFour is not null, SiliconFlowModelCatalog.ProviderName,
+                SiliconFlowModelCatalog.StatusModel, lastFour, spend, hardCap,
                 spend >= 15m, spend >= 24m, _aiError, _aiRequestInProgress),
             await _store.ReadRecentAiUsageAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadRecentChatAsync(cancellationToken).ConfigureAwait(false),
@@ -1063,8 +1062,8 @@ internal sealed class CompanionModule : IAsyncDisposable
     {
         var credential = command.Credential.Trim();
         if (credential.Length < 8) return Fail("ai_credential_invalid", "API Key 太短或为空。");
-        var previous = await _credentialStore.ReadAsync("deepseek", cancellationToken).ConfigureAwait(false);
-        await _credentialStore.SaveAsync("deepseek", credential, cancellationToken).ConfigureAwait(false);
+        var previous = await _credentialStore.ReadAsync(CredentialKey, cancellationToken).ConfigureAwait(false);
+        await _credentialStore.SaveAsync(CredentialKey, credential, cancellationToken).ConfigureAwait(false);
         try
         {
             await _store.WriteSettingForModuleAsync(
@@ -1073,28 +1072,33 @@ internal sealed class CompanionModule : IAsyncDisposable
         catch
         {
             if (previous is null)
-                await _credentialStore.DeleteAsync("deepseek", CancellationToken.None).ConfigureAwait(false);
+                await _credentialStore.DeleteAsync(CredentialKey, CancellationToken.None).ConfigureAwait(false);
             else
-                await _credentialStore.SaveAsync("deepseek", previous, CancellationToken.None).ConfigureAwait(false);
+                await _credentialStore.SaveAsync(CredentialKey, previous, CancellationToken.None).ConfigureAwait(false);
             throw;
         }
         _aiError = null;
-        return Ok("DeepSeek 凭据已保存到 Windows 凭据管理器；SQLite 只保留末四位。",
+        return Ok("硅基流动凭据已保存到 Windows 凭据管理器；SQLite 只保留末四位。",
             await SnapshotAsync(cancellationToken));
     }
 
     private async Task<CompanionOutcome> DeleteAiCredentialAsync(CancellationToken cancellationToken)
     {
-        var previous = await _credentialStore.ReadAsync("deepseek", cancellationToken).ConfigureAwait(false);
-        await _credentialStore.DeleteAsync("deepseek", cancellationToken).ConfigureAwait(false);
+        var previous = await _credentialStore.ReadAsync(CredentialKey, cancellationToken).ConfigureAwait(false);
+        var legacy = await _credentialStore.ReadAsync(LegacyCredentialKey, cancellationToken).ConfigureAwait(false);
         try
         {
+            await _credentialStore.DeleteAsync(CredentialKey, cancellationToken).ConfigureAwait(false);
+            await _credentialStore.DeleteAsync(LegacyCredentialKey, cancellationToken).ConfigureAwait(false);
             await _store.DeleteSettingForModuleAsync("ai-last4", cancellationToken).ConfigureAwait(false);
         }
         catch
         {
             if (previous is not null)
-                await _credentialStore.SaveAsync("deepseek", previous, CancellationToken.None).ConfigureAwait(false);
+                await _credentialStore.SaveAsync(CredentialKey, previous, CancellationToken.None).ConfigureAwait(false);
+            if (legacy is not null)
+                await _credentialStore.SaveAsync(LegacyCredentialKey, legacy, CancellationToken.None)
+                    .ConfigureAwait(false);
             throw;
         }
         return Ok("本机凭据已删除；如需彻底撤销，请同时到供应商后台撤销旧密钥。",
@@ -1480,15 +1484,16 @@ internal sealed class CompanionModule : IAsyncDisposable
                     "ai_previous_result_uncertain",
                     "这条消息的 AI 调用可能已经计费，但结果没有安全落库；不会自动再次调用，请重新描述后再试。"), null);
         }
-        var credential = await _credentialStore.ReadAsync("deepseek", cancellationToken).ConfigureAwait(false);
+        var credential = await ReadAiCredentialAsync(cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(credential))
             return (Fail("ai_credential_missing", "AI 未配置；表单、按钮和模板仍可正常使用。"), null);
         var spend = await _store.ReadMonthSpendAsync(_clock.Now, cancellationToken).ConfigureAwait(false);
         var hardCap = await _store.ReadAiMonthlyHardCapAsync(cancellationToken).ConfigureAwait(false);
         if (spend >= hardCap)
             return (Fail("ai_monthly_cap_reached", $"本月 AI 费用已到 {hardCap:F2} 元硬上限；确定性监督继续运行。"), null);
+        var profile = SiliconFlowModelCatalog.Select(purpose);
         var aiRequest = new AiProviderRequest(
-            purpose, text, ModelName, maxOutputTokens, _clock.Now,
+            purpose, text, profile.Model, maxOutputTokens, _clock.Now,
             await _supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false));
         var estimate = _aiProvider.EstimateCostCny(aiRequest);
         if (estimate > 1m && !approvedOverOneCny)
@@ -1497,8 +1502,8 @@ internal sealed class CompanionModule : IAsyncDisposable
             return (Fail("ai_monthly_cap_would_exceed", $"本次调用预计会超过 {hardCap:F2} 元月度硬上限。"), null);
 
         var reservation = new AiRequestRecordView(
-            requestId, _clock.Now, purpose, ProviderName, ModelName,
-            0, 0, 0, PriceVersion, estimate, false);
+            requestId, _clock.Now, purpose, SiliconFlowModelCatalog.ProviderName, profile.Model,
+            0, 0, 0, SiliconFlowModelCatalog.PriceVersion, estimate, false);
         if (!await _store.TryReserveAiRequestAsync(reservation, cancellationToken).ConfigureAwait(false))
         {
             var previous = await _store.ReadAiCallAsync(requestId, cancellationToken).ConfigureAwait(false);
@@ -1526,11 +1531,12 @@ internal sealed class CompanionModule : IAsyncDisposable
             _aiRequestInProgress = false;
         }
 
-        var cost = CalculateCost(providerResult.Usage);
+        var cost = SiliconFlowModelCatalog.CalculateCost(profile, providerResult.Usage);
         var record = new AiRequestRecordView(
-            requestId, _clock.Now, purpose, ProviderName, ModelName,
+            requestId, _clock.Now, purpose, SiliconFlowModelCatalog.ProviderName, profile.Model,
             providerResult.Usage.InputTokens, providerResult.Usage.OutputTokens,
-            providerResult.Usage.CacheHitInputTokens, PriceVersion, cost, providerResult.Success);
+            providerResult.Usage.CacheHitInputTokens, SiliconFlowModelCatalog.PriceVersion, cost,
+            providerResult.Success);
         await _store.SettleAiRequestAsync(record, providerResult.ErrorCode, providerResult, cancellationToken)
             .ConfigureAwait(false);
         return ProviderOutcome(providerResult);
@@ -1546,23 +1552,20 @@ internal sealed class CompanionModule : IAsyncDisposable
                 providerResult.ErrorCode ?? "ai_provider_failed",
                 providerResult.ErrorCode == "ai_clarification_required"
                     ? providerResult.Message ?? "请补充候选操作中的歧义。"
-                    : "云端 AI 调用失败；确定性监督和手工操作不受影响。"), providerResult);
+                    : providerResult.Message ??
+                      "云端 AI 调用失败；确定性监督和手工操作不受影响。"), providerResult);
         }
 
         _aiError = null;
         return (new CompanionOutcome(true), providerResult);
     }
 
-    private static decimal CalculateCost(AiTokenUsage usage)
+    private async ValueTask<string?> ReadAiCredentialAsync(CancellationToken cancellationToken)
     {
-        var cacheHit = Math.Min(usage.InputTokens, usage.CacheHitInputTokens);
-        var cacheMiss = Math.Max(0, usage.InputTokens - cacheHit);
-        return Math.Round(
-            cacheHit / 1_000_000m * 0.02m +
-            cacheMiss / 1_000_000m * 1m +
-            usage.OutputTokens / 1_000_000m * 2m,
-            6,
-            MidpointRounding.AwayFromZero);
+        var current = await _credentialStore.ReadAsync(CredentialKey, cancellationToken).ConfigureAwait(false);
+        return !string.IsNullOrWhiteSpace(current)
+            ? current
+            : await _credentialStore.ReadAsync(LegacyCredentialKey, cancellationToken).ConfigureAwait(false);
     }
 
     private static CompanionOutcome Ok(string message, CompanionSnapshot snapshot) =>

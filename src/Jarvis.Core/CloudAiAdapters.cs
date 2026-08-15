@@ -124,19 +124,21 @@ internal sealed class WindowsAiCredentialStore : IAiCredentialStore
     private static extern void CredFree(IntPtr buffer);
 }
 
-internal sealed class DeepSeekCloudAiProvider(HttpClient? httpClient = null) : ICloudAiProvider, IDisposable
+internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) : ICloudAiProvider, IDisposable
 {
-    private const string Endpoint = "https://api.deepseek.com/chat/completions";
-    private readonly HttpClient _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
+    private readonly HttpClient _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
     private readonly bool _ownsClient = httpClient is null;
 
     public decimal EstimateCostCny(AiProviderRequest request)
     {
+        var profile = SiliconFlowModelCatalog.Resolve(request.Model);
         var systemPrompt = request.Purpose == AiRequestPurpose.NaturalLanguageOperation
             ? CandidateSystemPrompt(request)
             : "你是 Jarvis 的简洁中文助手。只回答当前用户问题，不虚构监督事实。";
         var estimatedInputTokens = Encoding.UTF8.GetByteCount(systemPrompt + request.Text) + 512;
-        return estimatedInputTokens / 1_000_000m * 1m + request.MaxOutputTokens / 1_000_000m * 2m;
+        return SiliconFlowModelCatalog.CalculateCost(
+            profile,
+            new AiTokenUsage(estimatedInputTokens, request.MaxOutputTokens, 0));
     }
 
     public async ValueTask<AiProviderResult> CompleteAsync(
@@ -155,17 +157,19 @@ internal sealed class DeepSeekCloudAiProvider(HttpClient? httpClient = null) : I
             },
             new JsonObject { ["role"] = "user", ["content"] = request.Text }
         };
+        var profile = SiliconFlowModelCatalog.Resolve(request.Model);
         var payload = new JsonObject
         {
             ["model"] = request.Model,
-            ["thinking"] = new JsonObject { ["type"] = "disabled" },
             ["messages"] = messages,
-            ["max_tokens"] = request.MaxOutputTokens
+            ["max_tokens"] = request.MaxOutputTokens,
+            ["stream"] = false
         };
+        if (profile.DisableThinking) payload["enable_thinking"] = false;
         if (request.Purpose == AiRequestPurpose.NaturalLanguageOperation)
             payload["response_format"] = new JsonObject { ["type"] = "json_object" };
 
-        using var message = new HttpRequestMessage(HttpMethod.Post, Endpoint)
+        using var message = new HttpRequestMessage(HttpMethod.Post, SiliconFlowModelCatalog.Endpoint)
         {
             Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
         };
@@ -175,7 +179,7 @@ internal sealed class DeepSeekCloudAiProvider(HttpClient? httpClient = null) : I
         if (!response.IsSuccessStatusCode)
             return new AiProviderResult(
                 false, null, new AiTokenUsage(0, 0, 0),
-                $"http_{(int)response.StatusCode}", "DeepSeek 请求失败。");
+                $"http_{(int)response.StatusCode}", ErrorMessage(response.StatusCode));
         var parsedUsage = new AiTokenUsage(0, 0, 0);
         try
         {
@@ -184,10 +188,16 @@ internal sealed class DeepSeekCloudAiProvider(HttpClient? httpClient = null) : I
             var content = root.GetProperty("choices")[0].GetProperty("message")
                 .GetProperty("content").GetString() ?? string.Empty;
             var usage = root.GetProperty("usage");
+            var cacheHit = usage.TryGetProperty("prompt_cache_hit_tokens", out var hit)
+                ? hit.GetInt32()
+                : usage.TryGetProperty("prompt_tokens_details", out var details) &&
+                  details.TryGetProperty("cached_tokens", out var cached)
+                    ? cached.GetInt32()
+                    : 0;
             parsedUsage = new AiTokenUsage(
                 usage.GetProperty("prompt_tokens").GetInt32(),
                 usage.GetProperty("completion_tokens").GetInt32(),
-                usage.TryGetProperty("prompt_cache_hit_tokens", out var hit) ? hit.GetInt32() : 0);
+                cacheHit);
             if (request.Purpose != AiRequestPurpose.NaturalLanguageOperation)
                 return new AiProviderResult(true, content, parsedUsage);
             using (var candidateDocument = JsonDocument.Parse(content))
@@ -210,7 +220,7 @@ internal sealed class DeepSeekCloudAiProvider(HttpClient? httpClient = null) : I
         catch (Exception exception) when (exception is JsonException or KeyNotFoundException or FormatException)
         {
             return new AiProviderResult(false, null, parsedUsage,
-                "ai_response_invalid", "DeepSeek 返回了无法解析的响应。");
+                "ai_response_invalid", "硅基流动返回了无法解析的响应。");
         }
     }
 
@@ -218,6 +228,19 @@ internal sealed class DeepSeekCloudAiProvider(HttpClient? httpClient = null) : I
     {
         if (_ownsClient) _httpClient.Dispose();
     }
+
+    private static string ErrorMessage(System.Net.HttpStatusCode statusCode) => statusCode switch
+    {
+        System.Net.HttpStatusCode.Unauthorized =>
+            "硅基流动拒绝了 API Key（401）；请确认密钥来自硅基流动且仍有效。",
+        System.Net.HttpStatusCode.Forbidden =>
+            "硅基流动拒绝访问该模型（403）；请检查账号认证和模型权限。",
+        (System.Net.HttpStatusCode)429 =>
+            "硅基流动请求频率或额度已达限制（429），请稍后再试。",
+        System.Net.HttpStatusCode.ServiceUnavailable or System.Net.HttpStatusCode.GatewayTimeout =>
+            "硅基流动模型当前繁忙，请稍后再试。",
+        _ => $"硅基流动请求失败（HTTP {(int)statusCode}）。"
+    };
 
     private static string CandidateSystemPrompt(AiProviderRequest request)
     {

@@ -265,7 +265,9 @@ public sealed record CompanionSnapshot(
         [],
         new(ReviewSessionState.NotDue, new TimeOnly(23, 0)),
         new(ReviewSessionState.NotDue, 14),
-        new(false, "DeepSeek", "deepseek-v4-flash", null, 0m, 30m, false, false, null),
+        new(false, "SiliconFlow",
+            "DeepSeek-V4-Flash（普通） / DeepSeek-V4-Pro（复盘与复杂操作）",
+            null, 0m, 30m, false, false, null),
         [],
         [],
         null);

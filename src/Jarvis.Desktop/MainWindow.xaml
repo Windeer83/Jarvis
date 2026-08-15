@@ -317,7 +317,7 @@
                                            TextWrapping="Wrap" Margin="0,0,0,12" />
                                 <Separator />
                                 <WrapPanel Margin="0,10,0,6">
-                                    <TextBlock Text="DeepSeek API Key" VerticalAlignment="Center" />
+                                    <TextBlock Text="硅基流动 API Key" VerticalAlignment="Center" />
                                     <PasswordBox x:Name="AiCredentialBox" Width="300" Margin="8,0" Padding="6" />
                                     <Button Content="保存到 Windows 凭据管理器" Padding="10,5"
                                             Click="SaveAiCredentialButton_Click" />
@@ -329,7 +329,7 @@
                                             Click="SetAiMonthlyHardCapButton_Click" />
                                 </WrapPanel>
                                 <TextBlock x:Name="AiStatusText" Text="AI 未配置" Foreground="#4A5568" />
-                                <TextBlock Text="发送时，当前输入与完成该候选所需的最小承诺投影会发往 DeepSeek 云端；不会发送屏幕、按键、聊天历史或完整监督数据库。"
+                                <TextBlock Text="发送时，当前输入与完成该候选所需的最小承诺投影会发往硅基流动：普通对话使用 DeepSeek-V4-Flash，复盘和复杂候选操作使用 DeepSeek-V4-Pro；不会发送屏幕、按键、聊天历史或完整监督数据库。"
                                            Foreground="#7A4E00" TextWrapping="Wrap" Margin="0,4,0,0" />
                                 <TextBox x:Name="AiChatBox" MinHeight="52" TextWrapping="Wrap" AcceptsReturn="True"
                                          Margin="0,8,0,6" Padding="8" />

@@ -47,7 +47,7 @@ internal static class Program
                     supervision,
                     clock,
                     new LarkCliWorktimeChannel(),
-                    new DeepSeekCloudAiProvider(),
+                    new SiliconFlowCloudAiProvider(),
                     new WindowsAiCredentialStore())
                 .GetAwaiter()
                 .GetResult();
