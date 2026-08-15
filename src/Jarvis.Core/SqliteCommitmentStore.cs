@@ -87,12 +87,12 @@ internal sealed partial class SqliteCommitmentStore
         var version = Convert.ToInt32(
             await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
-        if (version > 6)
+        if (version > 7)
         {
-            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 6。");
+            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 7。");
         }
 
-        if (version == 6)
+        if (version == 7)
         {
             return;
         }
@@ -112,8 +112,63 @@ internal sealed partial class SqliteCommitmentStore
             await MigrateToVersionFiveAsync(connection, migration, cancellationToken)
                 .ConfigureAwait(false);
         }
-        await MigrateToVersionSixAsync(connection, migration, cancellationToken).ConfigureAwait(false);
+        if (version < 6)
+        {
+            await MigrateToVersionSixAsync(connection, migration, cancellationToken).ConfigureAwait(false);
+        }
+        await MigrateToVersionSevenAsync(connection, migration, cancellationToken).ConfigureAwait(false);
         await migration.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task MigrateToVersionSevenAsync(
+        SqliteConnection connection,
+        SqliteTransaction migration,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteSchemaAsync(connection, migration, """
+            ALTER TABLE ai_usage ADD COLUMN latency_milliseconds INTEGER NOT NULL DEFAULT 0;
+            CREATE TABLE ai_review_drafts (
+                draft_id TEXT PRIMARY KEY,
+                kind INTEGER NOT NULL,
+                source_id TEXT NOT NULL,
+                request_id TEXT NOT NULL UNIQUE,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL,
+                state INTEGER NOT NULL,
+                facts_scope TEXT NOT NULL,
+                fact_item_count INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                anonymized_comparison_prompt TEXT NULL,
+                confirmed_text TEXT NULL,
+                confirmed_at_utc TEXT NULL,
+                user_modified INTEGER NOT NULL DEFAULT 0,
+                quality_rating INTEGER NULL,
+                structure_reliable INTEGER NULL,
+                ambiguity_handled INTEGER NULL,
+                no_overreach INTEGER NULL,
+                privacy_scope_confirmed INTEGER NULL,
+                evaluation_note TEXT NULL,
+                FOREIGN KEY (request_id) REFERENCES ai_usage(request_id)
+            );
+            CREATE INDEX ix_ai_review_drafts_created
+                ON ai_review_drafts(created_at_utc DESC);
+            CREATE TABLE manual_ai_comparisons (
+                comparison_id TEXT PRIMARY KEY,
+                draft_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                recorded_at_utc TEXT NOT NULL,
+                output_text TEXT NOT NULL,
+                quality_rating INTEGER NOT NULL,
+                structure_reliable INTEGER NOT NULL,
+                ambiguity_handled INTEGER NOT NULL,
+                no_overreach INTEGER NOT NULL,
+                privacy_scope_confirmed INTEGER NOT NULL,
+                evaluation_note TEXT NULL,
+                FOREIGN KEY (draft_id) REFERENCES ai_review_drafts(draft_id) ON DELETE CASCADE
+            );
+            PRAGMA user_version = 7;
+            """, cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task MigrateToVersionSixAsync(

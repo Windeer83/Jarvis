@@ -466,6 +466,63 @@
                                         Click="ConfirmCycleFocusesButton_Click" />
                             </StackPanel>
                         </TabItem>
+                        <TabItem Header="AI 复盘辅助（T21）">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="10">
+                                    <TextBlock Text="AI 只接收当前复盘所需的 Core 事实投影；输出先作为草稿，确认前不会进入正式记录。"
+                                               Foreground="#4A5568" TextWrapping="Wrap" />
+                                    <WrapPanel Margin="0,10,0,8">
+                                        <Button x:Name="GenerateDailyAiReviewButton" Content="整理当前每日复盘"
+                                                Padding="10,5" Margin="0,0,8,0"
+                                                Click="GenerateDailyAiReviewButton_Click" />
+                                        <Button x:Name="GenerateCycleAiReviewButton" Content="整理当前周期复盘"
+                                                Padding="10,5" Margin="0,0,8,0"
+                                                Click="GenerateCycleAiReviewButton_Click" />
+                                        <ProgressBar x:Name="AiReviewBusyBar" Width="150" Height="16"
+                                                     IsIndeterminate="True" Visibility="Collapsed" />
+                                    </WrapPanel>
+                                    <TextBlock x:Name="AiReviewDraftStatusText" Text="当前没有待确认的 AI 复盘草稿。"
+                                               TextWrapping="Wrap" Margin="0,0,0,6" />
+                                    <TextBox x:Name="AiReviewDraftBox" Height="120" AcceptsReturn="True"
+                                             TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="7"
+                                             ToolTip="可以编辑；只有点击确认后才进入正式复盘记录。" />
+                                    <WrapPanel Margin="0,8,0,6">
+                                        <TextBlock Text="质量 1–5" VerticalAlignment="Center" />
+                                        <TextBox x:Name="AiReviewQualityBox" Width="40" Text="4" Margin="6,0,12,0" Padding="4" />
+                                        <CheckBox x:Name="AiReviewStructureBox" Content="结构可靠" IsChecked="True" Margin="0,0,12,0" />
+                                        <CheckBox x:Name="AiReviewAmbiguityBox" Content="歧义处理正确" IsChecked="True" Margin="0,0,12,0" />
+                                        <CheckBox x:Name="AiReviewNoOverreachBox" Content="没有越权推断" IsChecked="True" Margin="0,0,12,0" />
+                                        <CheckBox x:Name="AiReviewPrivacyBox" Content="最小事实范围正确" IsChecked="True" />
+                                    </WrapPanel>
+                                    <WrapPanel>
+                                        <TextBox x:Name="AiReviewEvaluationNoteBox" Width="500" Padding="6"
+                                                 ToolTip="可选：记录质量、歧义或隐私观察" />
+                                        <Button x:Name="ConfirmAiReviewDraftButton" Content="确认并写入正式复盘"
+                                                Padding="10,5" Margin="8,0,0,0" IsEnabled="False"
+                                                Click="ConfirmAiReviewDraftButton_Click" />
+                                        <Button x:Name="DiscardAiReviewDraftButton" Content="放弃草稿"
+                                                Padding="10,5" Margin="8,0,0,0" IsEnabled="False"
+                                                Click="DiscardAiReviewDraftButton_Click" />
+                                    </WrapPanel>
+                                    <Separator Margin="0,12" />
+                                    <TextBlock Text="手动脱敏 Qwen 对照（不会自动调用或切换供应商）" FontWeight="SemiBold" />
+                                    <TextBox x:Name="ManualComparisonPromptBox" Height="70" IsReadOnly="True"
+                                             TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="6"
+                                             Margin="0,5,0,5" />
+                                    <TextBox x:Name="ManualComparisonOutputBox" Height="70" AcceptsReturn="True"
+                                             TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="6"
+                                             ToolTip="用户手动把上面的脱敏提示交给 qwen3.7-flash 后，将结果粘贴到这里。" />
+                                    <Button Content="记录 qwen3.7-flash 手动对照" Width="230" Padding="10,5"
+                                            Margin="0,6,0,0" Click="RecordManualAiComparisonButton_Click" />
+                                    <Separator Margin="0,12" />
+                                    <TextBlock Text="两周模型试运行证据" FontWeight="SemiBold" />
+                                    <TextBlock x:Name="AiTrialEvidenceText" Text="尚无复盘 AI 请求。"
+                                               Margin="0,5,0,0" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="AiReviewHistoryText" Text="尚无已确认 AI 复盘记录。"
+                                               Margin="0,8,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
                     </TabControl>
                 </GroupBox>
 

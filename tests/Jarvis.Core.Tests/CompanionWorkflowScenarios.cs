@@ -751,6 +751,16 @@ public sealed class CompanionWorkflowScenarios
         Assert.Equal(
             AiModelPreference.Pro,
             Assert.IsType<SetAiModelPreferenceCommand>(modelRoundTrip!.Companion).Preference);
+
+        var reviewJson = JsonSerializer.Serialize(new CoreRequest(
+            CoreOperations.DispatchCompanion,
+            Companion: new ConfirmAiReviewDraftCommand(
+                Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                "review", 4, true, true, true, true, "checked")), CoreProtocol.Json);
+        var reviewRoundTrip = JsonSerializer.Deserialize<CoreRequest>(reviewJson, CoreProtocol.Json);
+        var review = Assert.IsType<ConfirmAiReviewDraftCommand>(reviewRoundTrip!.Companion);
+        Assert.Equal(4, review.QualityRating);
+        Assert.True(review.PrivacyScopeConfirmed);
     }
 
     [Fact]
@@ -787,6 +797,71 @@ public sealed class CompanionWorkflowScenarios
             "deepseek-ai/DeepSeek-V4-Flash",
             request.RootElement.GetProperty("model").GetString());
         Assert.False(request.RootElement.GetProperty("enable_thinking").GetBoolean());
+    }
+
+    [Fact]
+    public async Task SiliconFlow_review_assistance_sends_only_the_explicit_fact_projection_and_parses_json()
+    {
+        var content = JsonSerializer.Serialize(new
+        {
+            draftText = "review draft",
+            observations = new[] { "fact-backed observation" },
+            suggestedAdjustments = new[] { "one adjustment" }
+        });
+        var handler = new StubHttpHandler(JsonSerializer.Serialize(new
+        {
+            choices = new[] { new { message = new { content } } },
+            usage = new { prompt_tokens = 90, completion_tokens = 40 }
+        }));
+        using var provider = new SiliconFlowCloudAiProvider(new HttpClient(handler));
+        var sourceId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var commitmentId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+        var facts = new AiReviewFacts(
+            AiReviewKind.Daily,
+            sourceId,
+            new DateOnly(2026, 8, 15),
+            new DateOnly(2026, 8, 15),
+            "only-this-summary",
+            [],
+            [new CommitmentReviewView(
+                commitmentId, 2, CommitmentReviewState.Completed, Start,
+                RawText: "review fact", Assessment: CompletionAssessment.Completed,
+                AnsweredAt: Start)],
+            null,
+            2);
+        var unrelated = new SupervisionSnapshot(
+            Start,
+            null,
+            [],
+            new ActivityObservation(
+                ActivityAvailability.Available,
+                true,
+                "must-not-leak.exe",
+                Start),
+            null);
+
+        var result = await provider.CompleteAsync(
+            new AiProviderRequest(
+                AiRequestPurpose.DailyReviewAssist,
+                "organize",
+                "deepseek-ai/DeepSeek-V4-Flash",
+                512,
+                Start,
+                unrelated,
+                facts),
+            "sk-test",
+            CancellationToken.None);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal("review draft", result.ReviewDraft!.DraftText);
+        Assert.Equal(["one adjustment"], result.ReviewDraft.SuggestedAdjustments);
+        using var request = JsonDocument.Parse(handler.RequestBody!);
+        Assert.Equal("json_object", request.RootElement.GetProperty("response_format").GetProperty("type").GetString());
+        var systemPrompt = request.RootElement.GetProperty("messages")[0].GetProperty("content").GetString()!;
+        Assert.Contains("only-this-summary", systemPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain(sourceId.ToString("D"), systemPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(commitmentId.ToString("D"), systemPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("must-not-leak.exe", systemPrompt, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1579,6 +1654,7 @@ internal sealed class FakeAiProvider : ICloudAiProvider
     public AiTokenUsage NextUsage { get; set; } = new(100, 50, 0);
     public decimal? EstimatedCostCny { get; set; }
     public NaturalLanguageOperationCandidate? NextCandidate { get; set; }
+    public AiReviewDraftPayload? NextReviewDraft { get; set; }
     public int CallCount { get; private set; }
     public Exception? NextException { get; set; }
     public TaskCompletionSource<bool>? Started { get; set; }
@@ -1603,7 +1679,8 @@ internal sealed class FakeAiProvider : ICloudAiProvider
                 ? "candidate"
                 : "今天的重点已经整理好了。",
             NextUsage,
-            Candidate: NextCandidate);
+            Candidate: NextCandidate,
+            ReviewDraft: NextReviewDraft);
     }
 }
 

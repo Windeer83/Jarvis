@@ -245,6 +245,57 @@ public sealed class CompanionDesktopPresentationScenarios
         });
     }
 
+    [Fact]
+    public void Ai_review_assistance_exposes_progress_confirmation_and_trial_quality_evidence()
+    {
+        RunOnStaThread(() =>
+        {
+            var window = new MainWindow();
+            try
+            {
+                var draft = new AiReviewDraftView(
+                    Guid.NewGuid(), AiReviewKind.Daily, Guid.NewGuid(), Guid.NewGuid(),
+                    new DateOnly(2026, 8, 15), new DateOnly(2026, 8, 15),
+                    DateTimeOffset.Parse("2026-08-15T12:00:00Z"), AiReviewDraftState.Pending,
+                    "SiliconFlow", "deepseek-ai/DeepSeek-V4-Flash",
+                    "one review only", 3, "editable draft");
+                var evidence = new AiTrialEvidenceView(
+                    DateTimeOffset.Parse("2026-08-01T00:00:00Z"),
+                    DateTimeOffset.Parse("2026-08-15T00:00:00Z"),
+                    true, 4, 3, 1, 3, 1, 2, 1, 1, 850, 0.12m,
+                    4.5, 1, .5, 1, 1,
+                    ["deepseek-ai/DeepSeek-V4-Flash", "qwen3.7-flash"],
+                    3, 1, 0, 1);
+
+                InvokePrivate(window, "ApplyCompanionSnapshot", CompanionSnapshot.Empty with
+                {
+                    PendingAiReviewDraft = draft,
+                    TrialEvidence = evidence
+                });
+
+                Assert.Equal("editable draft", ((TextBox)window.FindName("AiReviewDraftBox")).Text);
+                Assert.True(((Button)window.FindName("ConfirmAiReviewDraftButton")).IsEnabled);
+                var trial = ((TextBlock)window.FindName("AiTrialEvidenceText")).Text;
+                Assert.Contains("两周窗口已完成", trial, StringComparison.Ordinal);
+                Assert.Contains("结构可靠", trial, StringComparison.Ordinal);
+                Assert.Contains("qwen3.7-flash", trial, StringComparison.Ordinal);
+                Assert.Contains("手动 Qwen", trial, StringComparison.Ordinal);
+
+                InvokePrivate(window, "SetAiReviewBusy", true);
+                Assert.Equal(Visibility.Visible, ((ProgressBar)window.FindName("AiReviewBusyBar")).Visibility);
+                Assert.Contains(
+                    "正在生成",
+                    ((TextBlock)window.FindName("AiReviewDraftStatusText")).Text,
+                    StringComparison.Ordinal);
+            }
+            finally
+            {
+                window.StopForApplicationExit();
+                window.Hide();
+            }
+        });
+    }
+
     private static CommitmentView Commitment(DateTimeOffset now) => new(
         Guid.NewGuid(), CommitmentKind.Computer, now.AddMinutes(-25), now,
         "交易的复盘", null,

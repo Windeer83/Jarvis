@@ -132,9 +132,7 @@ internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) 
     public decimal EstimateCostCny(AiProviderRequest request)
     {
         var profile = SiliconFlowModelCatalog.Resolve(request.Model);
-        var systemPrompt = request.Purpose == AiRequestPurpose.NaturalLanguageOperation
-            ? CandidateSystemPrompt(request)
-            : "你是 Jarvis 的简洁中文助手。只回答当前用户问题，不虚构监督事实。";
+        var systemPrompt = SystemPrompt(request);
         var estimatedInputTokens = Encoding.UTF8.GetByteCount(systemPrompt + request.Text) + 512;
         return SiliconFlowModelCatalog.CalculateCost(
             profile,
@@ -151,9 +149,7 @@ internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) 
             new JsonObject
             {
                 ["role"] = "system",
-                ["content"] = request.Purpose == AiRequestPurpose.NaturalLanguageOperation
-                    ? CandidateSystemPrompt(request)
-                    : "你是 Jarvis 的简洁中文助手。只回答当前用户问题，不虚构监督事实。"
+                ["content"] = SystemPrompt(request)
             },
             new JsonObject { ["role"] = "user", ["content"] = request.Text }
         };
@@ -166,7 +162,7 @@ internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) 
             ["stream"] = false
         };
         if (profile.DisableThinking) payload["enable_thinking"] = false;
-        if (request.Purpose == AiRequestPurpose.NaturalLanguageOperation)
+        if (request.Purpose != AiRequestPurpose.BasicChat)
             payload["response_format"] = new JsonObject { ["type"] = "json_object" };
 
         using var message = new HttpRequestMessage(HttpMethod.Post, SiliconFlowModelCatalog.Endpoint)
@@ -198,8 +194,17 @@ internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) 
                 usage.GetProperty("prompt_tokens").GetInt32(),
                 usage.GetProperty("completion_tokens").GetInt32(),
                 cacheHit);
-            if (request.Purpose != AiRequestPurpose.NaturalLanguageOperation)
+            if (request.Purpose == AiRequestPurpose.BasicChat)
                 return new AiProviderResult(true, content, parsedUsage);
+            if (request.Purpose is AiRequestPurpose.DailyReviewAssist or AiRequestPurpose.CycleReviewAssist)
+            {
+                var reviewDraft = ParseReviewDraft(content);
+                return reviewDraft is null
+                    ? new AiProviderResult(
+                        false, null, parsedUsage, "review_draft_invalid",
+                        "AI 返回的复盘草稿结构无法验证。")
+                    : new AiProviderResult(true, content, parsedUsage, ReviewDraft: reviewDraft);
+            }
             using (var candidateDocument = JsonDocument.Parse(content))
             {
                 if (candidateDocument.RootElement.TryGetProperty(
@@ -241,6 +246,111 @@ internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) 
             "硅基流动模型当前繁忙，请稍后再试。",
         _ => $"硅基流动请求失败（HTTP {(int)statusCode}）。"
     };
+
+    private static string SystemPrompt(AiProviderRequest request) => request.Purpose switch
+    {
+        AiRequestPurpose.NaturalLanguageOperation => CandidateSystemPrompt(request),
+        AiRequestPurpose.DailyReviewAssist or AiRequestPurpose.CycleReviewAssist =>
+            ReviewSystemPrompt(request),
+        _ => "你是 Jarvis 的简洁中文助手。只回答当前用户问题，不虚构监督事实。"
+    };
+
+    private static string ReviewSystemPrompt(AiProviderRequest request)
+    {
+        if (request.ReviewFacts is null)
+            throw new InvalidOperationException("复盘辅助缺少 Core 提供的事实投影。");
+        var kind = request.ReviewFacts.Kind == AiReviewKind.Daily ? "每日复盘" : "周期复盘";
+        var facts = request.ReviewFacts;
+        var projection = new
+        {
+            kind = facts.Kind.ToString(),
+            facts.PeriodStart,
+            facts.PeriodEnd,
+            facts.FactsSummary,
+            dailyAnswers = facts.DailyAnswers.Select(item => new
+            {
+                question = item.Question.ToString(),
+                item.RawText,
+                item.AnsweredAt
+            }),
+            commitmentReviews = facts.CommitmentReviews.Select(item => new
+            {
+                state = item.State.ToString(),
+                item.RequestedAt,
+                item.DeferredUntil,
+                item.RawText,
+                assessment = item.Assessment?.ToString(),
+                item.AnsweredAt
+            }),
+            cycleTrends = facts.CycleTrends is null ? null : new
+            {
+                facts.CycleTrends.PlannedCommitments,
+                facts.CycleTrends.ReviewedCommitments,
+                facts.CycleTrends.PlannedMinutes,
+                facts.CycleTrends.RelatedMinutes,
+                facts.CycleTrends.DistractingMinutes,
+                facts.CycleTrends.RestMinutes,
+                facts.CycleTrends.DeferredReviews,
+                facts.CycleTrends.NoResponseCount,
+                facts.CycleTrends.ObservedMinutes,
+                commitments = facts.CycleTrends.Commitments.Select(item => new
+                {
+                    item.LocalDate,
+                    item.InputGoal,
+                    item.OutcomeGoal,
+                    item.PlannedMinutes,
+                    item.RelatedMinutes,
+                    item.DistractingMinutes,
+                    item.RestMinutes,
+                    reviewState = item.ReviewState?.ToString(),
+                    assessment = item.Assessment?.ToString(),
+                    item.ReviewText
+                }),
+                dailyReviews = facts.CycleTrends.DailyReviews.Select(item => new
+                {
+                    item.ReviewDate,
+                    state = item.State.ToString(),
+                    item.AnswerCount
+                })
+            },
+            facts.FactItemCount
+        };
+        return $$"""
+            你只根据下面由 Jarvis Core 提供的最小事实投影整理{{kind}}草稿。
+            不得补充投影之外的经历、原因、评价或人格判断；不生成自律分数、排行榜或诊断。
+            输出只是待确认草稿，不能声称已经写入正式记录。
+            建议调整最多三项；不确定时在观察中明确写“待用户确认”。
+            只输出 JSON：
+            {"draftText":"一段可编辑总结","observations":["有事实依据的观察"],"suggestedAdjustments":["最多三项候选调整"]}
+            Core 最小事实投影：{{JsonSerializer.Serialize(projection, CoreProtocol.Json)}}
+            """;
+    }
+
+    private static AiReviewDraftPayload? ParseReviewDraft(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (!root.TryGetProperty("draftText", out var draftNode) || draftNode.ValueKind != JsonValueKind.String)
+            return null;
+        var draftText = draftNode.GetString()?.Trim();
+        if (string.IsNullOrWhiteSpace(draftText)) return null;
+        var observations = ReadStringArray(root, "observations", 20);
+        var adjustments = ReadStringArray(root, "suggestedAdjustments", 3);
+        return new AiReviewDraftPayload(draftText, observations, adjustments);
+    }
+
+    private static IReadOnlyList<string> ReadStringArray(JsonElement root, string name, int maximum)
+    {
+        if (!root.TryGetProperty(name, out var node) || node.ValueKind != JsonValueKind.Array) return [];
+        return node.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString()?.Trim())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Select(item => item!)
+            .Distinct(StringComparer.Ordinal)
+            .Take(maximum)
+            .ToArray();
+    }
 
     private static string CandidateSystemPrompt(AiProviderRequest request)
     {

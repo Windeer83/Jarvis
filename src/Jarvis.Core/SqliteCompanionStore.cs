@@ -1043,7 +1043,8 @@ internal sealed class SqliteCompanionStore
         """
         UPDATE ai_usage
            SET input_tokens=$input,output_tokens=$output,cache_hit_input_tokens=$cache,
-               cost_cny=$cost,success=$success,error_code=$error,state='settled',result_json=$result
+               cost_cny=$cost,success=$success,error_code=$error,state='settled',result_json=$result,
+               latency_milliseconds=$latency
          WHERE request_id=$id AND state='reserved';
         """,
         cancellationToken,
@@ -1051,6 +1052,7 @@ internal sealed class SqliteCompanionStore
         ("$cache", record.CacheHitInputTokens),
         ("$cost", record.CostCny.ToString(CultureInfo.InvariantCulture)),
         ("$success", record.Success ? 1 : 0), ("$error", errorCode),
+        ("$latency", record.LatencyMilliseconds),
         ("$result", JsonSerializer.Serialize(result, CoreProtocol.Json)),
         ("$id", record.RequestId.ToString("D")));
 
@@ -1061,7 +1063,7 @@ internal sealed class SqliteCompanionStore
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT request_id,requested_at_utc,purpose,provider,model,input_tokens,output_tokens,
-                   cache_hit_input_tokens,price_version,cost_cny,success
+                   cache_hit_input_tokens,price_version,cost_cny,success,latency_milliseconds
             FROM ai_usage ORDER BY requested_at_utc DESC LIMIT 50;
             """;
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -1072,7 +1074,8 @@ internal sealed class SqliteCompanionStore
                 Guid.Parse(reader.GetString(0)), Parse(reader.GetString(1)),
                 (AiRequestPurpose)reader.GetInt32(2), reader.GetString(3), reader.GetString(4),
                 reader.GetInt32(5), reader.GetInt32(6), reader.GetInt32(7), reader.GetString(8),
-                decimal.Parse(reader.GetString(9), CultureInfo.InvariantCulture), reader.GetInt32(10) != 0));
+                decimal.Parse(reader.GetString(9), CultureInfo.InvariantCulture), reader.GetInt32(10) != 0,
+                reader.GetInt32(11)));
         }
 
         return result;
@@ -1094,6 +1097,314 @@ internal sealed class SqliteCompanionStore
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             result.Add(new ChatMessageView(Guid.Parse(reader.GetString(0)), Parse(reader.GetString(1)), reader.GetString(2), reader.GetString(3)));
         result.Reverse();
+        return result;
+    }
+
+    public async Task SaveAiReviewDraftAsync(
+        AiReviewDraftView draft,
+        AiReviewDraftPayload payload,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using (var discard = connection.CreateCommand())
+        {
+            discard.Transaction = transaction;
+            discard.CommandText = "UPDATE ai_review_drafts SET state=$discarded WHERE state=$pending;";
+            Add(discard, "$discarded", (int)AiReviewDraftState.Discarded);
+            Add(discard, "$pending", (int)AiReviewDraftState.Pending);
+            await discard.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await using (var insert = connection.CreateCommand())
+        {
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT INTO ai_review_drafts(
+                    draft_id,kind,source_id,request_id,period_start,period_end,created_at_utc,state,
+                    facts_scope,fact_item_count,payload_json,anonymized_comparison_prompt)
+                VALUES($id,$kind,$source,$request,$start,$end,$created,$state,$scope,$count,$payload,$prompt);
+                """;
+            Add(insert, "$id", draft.DraftId.ToString("D"));
+            Add(insert, "$kind", (int)draft.Kind);
+            Add(insert, "$source", draft.SourceId.ToString("D"));
+            Add(insert, "$request", draft.RequestId.ToString("D"));
+            Add(insert, "$start", draft.PeriodStart.ToString("O"));
+            Add(insert, "$end", draft.PeriodEnd.ToString("O"));
+            Add(insert, "$created", Format(draft.CreatedAt));
+            Add(insert, "$state", (int)AiReviewDraftState.Pending);
+            Add(insert, "$scope", draft.FactsScope);
+            Add(insert, "$count", draft.FactItemCount);
+            Add(insert, "$payload", JsonSerializer.Serialize(payload, CoreProtocol.Json));
+            Add(insert, "$prompt", draft.AnonymizedComparisonPrompt);
+            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<AiReviewDraftView?> ReadPendingAiReviewDraftAsync(
+        CancellationToken cancellationToken) =>
+        (await ReadAiReviewDraftsAsync(
+            "WHERE d.state=$state ORDER BY d.created_at_utc DESC LIMIT 1",
+            cancellationToken, ("$state", (object)(int)AiReviewDraftState.Pending)).ConfigureAwait(false))
+        .SingleOrDefault();
+
+    public async Task<IReadOnlyList<AiReviewDraftView>> ReadConfirmedAiReviewDraftsAsync(
+        CancellationToken cancellationToken) =>
+        await ReadAiReviewDraftsAsync(
+            "WHERE d.state=$state ORDER BY d.confirmed_at_utc DESC LIMIT 50",
+            cancellationToken, ("$state", (object)(int)AiReviewDraftState.Confirmed)).ConfigureAwait(false);
+
+    public async Task<AiReviewDraftView?> ReadAiReviewDraftAsync(
+        Guid draftId,
+        CancellationToken cancellationToken) =>
+        (await ReadAiReviewDraftsAsync(
+            "WHERE d.draft_id=$id LIMIT 1",
+            cancellationToken, ("$id", (object)draftId.ToString("D"))).ConfigureAwait(false))
+        .SingleOrDefault();
+
+    public async Task<bool> ConfirmAiReviewDraftAsync(
+        Guid draftId,
+        string confirmedText,
+        AiReviewEvaluationView evaluation,
+        DateTimeOffset confirmedAt,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE ai_review_drafts
+               SET state=$confirmed,confirmed_text=$text,confirmed_at_utc=$at,
+                   user_modified=CASE WHEN TRIM($text)<>TRIM(json_extract(payload_json,'$.draftText')) THEN 1 ELSE 0 END,
+                   quality_rating=$quality,structure_reliable=$structure,
+                   ambiguity_handled=$ambiguity,no_overreach=$overreach,
+                   privacy_scope_confirmed=$privacy,evaluation_note=$note
+             WHERE draft_id=$id AND state=$pending;
+            """;
+        Add(command, "$confirmed", (int)AiReviewDraftState.Confirmed);
+        Add(command, "$text", confirmedText);
+        Add(command, "$at", Format(confirmedAt));
+        Add(command, "$quality", evaluation.QualityRating);
+        Add(command, "$structure", evaluation.StructureReliable ? 1 : 0);
+        Add(command, "$ambiguity", evaluation.AmbiguityHandled ? 1 : 0);
+        Add(command, "$overreach", evaluation.NoOverreach ? 1 : 0);
+        Add(command, "$privacy", evaluation.PrivacyScopeConfirmed ? 1 : 0);
+        Add(command, "$note", evaluation.Note);
+        Add(command, "$id", draftId.ToString("D"));
+        Add(command, "$pending", (int)AiReviewDraftState.Pending);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+    }
+
+    public async Task<bool> DiscardAiReviewDraftAsync(Guid draftId, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE ai_review_drafts SET state=$discarded WHERE draft_id=$id AND state=$pending;";
+        Add(command, "$discarded", (int)AiReviewDraftState.Discarded);
+        Add(command, "$id", draftId.ToString("D"));
+        Add(command, "$pending", (int)AiReviewDraftState.Pending);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+    }
+
+    public async Task<bool> RecordManualAiComparisonAsync(
+        RecordManualAiComparisonCommand comparison,
+        DateTimeOffset recordedAt,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO manual_ai_comparisons(
+                comparison_id,draft_id,model,recorded_at_utc,output_text,quality_rating,
+                structure_reliable,ambiguity_handled,no_overreach,privacy_scope_confirmed,evaluation_note)
+            SELECT $comparison,draft_id,$model,$at,$output,$quality,$structure,$ambiguity,$overreach,$privacy,$note
+              FROM ai_review_drafts
+             WHERE draft_id=$draft AND state=$confirmed AND anonymized_comparison_prompt IS NOT NULL;
+            """;
+        Add(command, "$comparison", Guid.NewGuid().ToString("D"));
+        Add(command, "$draft", comparison.DraftId.ToString("D"));
+        Add(command, "$confirmed", (int)AiReviewDraftState.Confirmed);
+        Add(command, "$model", comparison.Model);
+        Add(command, "$at", Format(recordedAt));
+        Add(command, "$output", comparison.OutputText);
+        Add(command, "$quality", comparison.QualityRating);
+        Add(command, "$structure", comparison.StructureReliable ? 1 : 0);
+        Add(command, "$ambiguity", comparison.AmbiguityHandled ? 1 : 0);
+        Add(command, "$overreach", comparison.NoOverreach ? 1 : 0);
+        Add(command, "$privacy", comparison.PrivacyScopeConfirmed ? 1 : 0);
+        Add(command, "$note", comparison.Note);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+    }
+
+    public async Task<AiTrialEvidenceView> ReadAiTrialEvidenceAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        DateTimeOffset? startedAt;
+        await using (var start = connection.CreateCommand())
+        {
+            start.CommandText = "SELECT MIN(requested_at_utc) FROM ai_usage WHERE purpose IN ($daily,$cycle);";
+            Add(start, "$daily", (int)AiRequestPurpose.DailyReviewAssist);
+            Add(start, "$cycle", (int)AiRequestPurpose.CycleReviewAssist);
+            var value = await start.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            startedAt = value is null or DBNull ? null : Parse((string)value);
+        }
+        if (startedAt is null) return AiTrialEvidenceView.Empty;
+        var endsAt = startedAt.Value.AddDays(14);
+        int total;
+        int succeeded;
+        int daily;
+        int cycle;
+        double latency;
+        decimal cost;
+        await using (var usage = connection.CreateCommand())
+        {
+            usage.CommandText = """
+                SELECT COUNT(*),SUM(CASE WHEN success=1 THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN purpose=$daily THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN purpose=$cycle THEN 1 ELSE 0 END),
+                       COALESCE(AVG(CASE WHEN latency_milliseconds>0 THEN latency_milliseconds END),0),
+                       COALESCE(SUM(CAST(cost_cny AS REAL)),0)
+                  FROM ai_usage
+                 WHERE purpose IN ($daily,$cycle)
+                   AND requested_at_utc >= $start AND requested_at_utc < $end;
+                """;
+            Add(usage, "$daily", (int)AiRequestPurpose.DailyReviewAssist);
+            Add(usage, "$cycle", (int)AiRequestPurpose.CycleReviewAssist);
+            Add(usage, "$start", Format(startedAt.Value));
+            Add(usage, "$end", Format(endsAt));
+            await using var reader = await usage.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            total = reader.GetInt32(0);
+            succeeded = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+            daily = reader.IsDBNull(2) ? 0 : reader.GetInt32(2);
+            cycle = reader.IsDBNull(3) ? 0 : reader.GetInt32(3);
+            latency = reader.GetDouble(4);
+            cost = Convert.ToDecimal(reader.GetDouble(5), CultureInfo.InvariantCulture);
+        }
+        int confirmed;
+        int modified;
+        double? averageQuality;
+        double? structureRate;
+        double? ambiguityRate;
+        double? overreachRate;
+        double? privacyRate;
+        await using (var drafts = connection.CreateCommand())
+        {
+            drafts.CommandText = """
+                SELECT COUNT(*),SUM(user_modified),AVG(quality_rating),AVG(structure_reliable),
+                       AVG(ambiguity_handled),AVG(no_overreach),AVG(privacy_scope_confirmed)
+                  FROM ai_review_drafts d
+                  JOIN ai_usage u ON u.request_id=d.request_id
+                 WHERE d.state=$confirmed
+                   AND u.requested_at_utc >= $start AND u.requested_at_utc < $end;
+                """;
+            Add(drafts, "$confirmed", (int)AiReviewDraftState.Confirmed);
+            Add(drafts, "$start", Format(startedAt.Value));
+            Add(drafts, "$end", Format(endsAt));
+            await using var reader = await drafts.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            confirmed = reader.GetInt32(0);
+            modified = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+            averageQuality = reader.IsDBNull(2) ? null : reader.GetDouble(2);
+            structureRate = reader.IsDBNull(3) ? null : reader.GetDouble(3);
+            ambiguityRate = reader.IsDBNull(4) ? null : reader.GetDouble(4);
+            overreachRate = reader.IsDBNull(5) ? null : reader.GetDouble(5);
+            privacyRate = reader.IsDBNull(6) ? null : reader.GetDouble(6);
+        }
+        int comparisons;
+        double? manualAverageQuality;
+        double? manualStructureRate;
+        double? manualAmbiguityRate;
+        double? manualOverreachRate;
+        await using (var comparison = connection.CreateCommand())
+        {
+            comparison.CommandText = """
+                SELECT COUNT(*),AVG(c.quality_rating),AVG(c.structure_reliable),
+                       AVG(c.ambiguity_handled),AVG(c.no_overreach)
+                  FROM manual_ai_comparisons c
+                  JOIN ai_review_drafts d ON d.draft_id=c.draft_id
+                  JOIN ai_usage u ON u.request_id=d.request_id
+                 WHERE u.requested_at_utc >= $start AND u.requested_at_utc < $end;
+                """;
+            Add(comparison, "$start", Format(startedAt.Value));
+            Add(comparison, "$end", Format(endsAt));
+            await using var reader = await comparison.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            comparisons = reader.GetInt32(0);
+            manualAverageQuality = reader.IsDBNull(1) ? null : reader.GetDouble(1);
+            manualStructureRate = reader.IsDBNull(2) ? null : reader.GetDouble(2);
+            manualAmbiguityRate = reader.IsDBNull(3) ? null : reader.GetDouble(3);
+            manualOverreachRate = reader.IsDBNull(4) ? null : reader.GetDouble(4);
+        }
+        var models = new List<string>();
+        await using (var model = connection.CreateCommand())
+        {
+            model.CommandText = """
+                SELECT DISTINCT model FROM ai_usage
+                 WHERE purpose IN ($daily,$cycle)
+                   AND requested_at_utc >= $start AND requested_at_utc < $end
+                UNION
+                SELECT DISTINCT c.model FROM manual_ai_comparisons c
+                JOIN ai_review_drafts d ON d.draft_id=c.draft_id
+                JOIN ai_usage u ON u.request_id=d.request_id
+                 WHERE u.requested_at_utc >= $start AND u.requested_at_utc < $end
+                ORDER BY model;
+                """;
+            Add(model, "$daily", (int)AiRequestPurpose.DailyReviewAssist);
+            Add(model, "$cycle", (int)AiRequestPurpose.CycleReviewAssist);
+            Add(model, "$start", Format(startedAt.Value));
+            Add(model, "$end", Format(endsAt));
+            await using var reader = await model.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) models.Add(reader.GetString(0));
+        }
+        return new AiTrialEvidenceView(
+            startedAt, endsAt, now >= endsAt,
+            total, succeeded, total - succeeded, daily, cycle, confirmed, modified, comparisons,
+            latency, cost, averageQuality, structureRate, ambiguityRate, overreachRate, privacyRate, models,
+            manualAverageQuality, manualStructureRate, manualAmbiguityRate, manualOverreachRate);
+    }
+
+    private async Task<IReadOnlyList<AiReviewDraftView>> ReadAiReviewDraftsAsync(
+        string whereClause,
+        CancellationToken cancellationToken,
+        params (string Name, object Value)[] parameters)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT d.draft_id,d.kind,d.source_id,d.request_id,d.period_start,d.period_end,
+                   d.created_at_utc,d.state,u.provider,u.model,d.facts_scope,d.fact_item_count,
+                   d.payload_json,d.confirmed_text,d.confirmed_at_utc,d.user_modified,
+                   d.quality_rating,d.structure_reliable,d.ambiguity_handled,d.no_overreach,
+                   d.privacy_scope_confirmed,d.evaluation_note,d.anonymized_comparison_prompt
+              FROM ai_review_drafts d JOIN ai_usage u ON u.request_id=d.request_id
+              {whereClause};
+            """;
+        foreach (var parameter in parameters) Add(command, parameter.Name, parameter.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var result = new List<AiReviewDraftView>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var payload = JsonSerializer.Deserialize<AiReviewDraftPayload>(reader.GetString(12), CoreProtocol.Json)!;
+            var evaluation = reader.IsDBNull(16)
+                ? null
+                : new AiReviewEvaluationView(
+                    reader.GetInt32(16), reader.GetInt32(17) != 0, reader.GetInt32(18) != 0,
+                    reader.GetInt32(19) != 0, reader.GetInt32(20) != 0,
+                    reader.IsDBNull(21) ? null : reader.GetString(21));
+            result.Add(new AiReviewDraftView(
+                Guid.Parse(reader.GetString(0)), (AiReviewKind)reader.GetInt32(1),
+                Guid.Parse(reader.GetString(2)), Guid.Parse(reader.GetString(3)),
+                DateOnly.Parse(reader.GetString(4), CultureInfo.InvariantCulture),
+                DateOnly.Parse(reader.GetString(5), CultureInfo.InvariantCulture),
+                Parse(reader.GetString(6)), (AiReviewDraftState)reader.GetInt32(7),
+                reader.GetString(8), reader.GetString(9), reader.GetString(10), reader.GetInt32(11),
+                payload.DraftText, reader.IsDBNull(13) ? null : reader.GetString(13),
+                reader.IsDBNull(14) ? null : Parse(reader.GetString(14)), reader.GetInt32(15) != 0,
+                evaluation, reader.IsDBNull(22) ? null : reader.GetString(22)));
+        }
         return result;
     }
 

@@ -78,6 +78,19 @@ public enum AiModelPreference
     Pro
 }
 
+public enum AiReviewKind
+{
+    Daily,
+    Cycle
+}
+
+public enum AiReviewDraftState
+{
+    Pending,
+    Confirmed,
+    Discarded
+}
+
 public enum CandidateSource
 {
     Desktop,
@@ -230,7 +243,69 @@ public sealed record AiRequestRecordView(
     int CacheHitInputTokens,
     string PriceVersion,
     decimal CostCny,
-    bool Success);
+    bool Success,
+    int LatencyMilliseconds = 0);
+
+public sealed record AiReviewEvaluationView(
+    int QualityRating,
+    bool StructureReliable,
+    bool AmbiguityHandled,
+    bool NoOverreach,
+    bool PrivacyScopeConfirmed,
+    string? Note = null);
+
+public sealed record AiReviewDraftView(
+    Guid DraftId,
+    AiReviewKind Kind,
+    Guid SourceId,
+    Guid RequestId,
+    DateOnly PeriodStart,
+    DateOnly PeriodEnd,
+    DateTimeOffset CreatedAt,
+    AiReviewDraftState State,
+    string Provider,
+    string Model,
+    string FactsScope,
+    int FactItemCount,
+    string DraftText,
+    string? ConfirmedText = null,
+    DateTimeOffset? ConfirmedAt = null,
+    bool UserModified = false,
+    AiReviewEvaluationView? Evaluation = null,
+    string? AnonymizedComparisonPrompt = null);
+
+public sealed record AiTrialEvidenceView(
+    DateTimeOffset? TrialStartedAt,
+    DateTimeOffset? TrialEndsAt,
+    bool TrialWindowComplete,
+    int TotalRequests,
+    int SuccessfulRequests,
+    int FailedRequests,
+    int DailyRequests,
+    int CycleRequests,
+    int ConfirmedDrafts,
+    int ModifiedDrafts,
+    int ManualComparisonCount,
+    double AverageLatencyMilliseconds,
+    decimal TotalCostCny,
+    double? AverageQualityRating,
+    double? StructureReliableRate,
+    double? AmbiguityHandledRate,
+    double? NoOverreachRate,
+    double? PrivacyScopeConfirmedRate,
+    IReadOnlyList<string>? Models = null,
+    double? ManualAverageQualityRating = null,
+    double? ManualStructureReliableRate = null,
+    double? ManualAmbiguityHandledRate = null,
+    double? ManualNoOverreachRate = null)
+{
+    public static AiTrialEvidenceView Empty { get; } = new(
+        null, null, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0m,
+        null, null, null, null, null, []);
+
+    [JsonIgnore]
+    public IReadOnlyList<string> UsedModels => Models ?? [];
+}
 
 public sealed record ChatMessageView(
     Guid MessageId,
@@ -264,8 +339,17 @@ public sealed record CompanionSnapshot(
     AiStatusView Ai,
     IReadOnlyList<AiRequestRecordView> RecentAiRequests,
     IReadOnlyList<ChatMessageView> RecentChat,
-    NaturalLanguageOperationCandidate? PendingCandidate)
+    NaturalLanguageOperationCandidate? PendingCandidate,
+    AiReviewDraftView? PendingAiReviewDraft = null,
+    IReadOnlyList<AiReviewDraftView>? AiReviewDraftHistory = null,
+    AiTrialEvidenceView? TrialEvidence = null)
 {
+    [JsonIgnore]
+    public IReadOnlyList<AiReviewDraftView> ConfirmedAiReviewDrafts => AiReviewDraftHistory ?? [];
+
+    [JsonIgnore]
+    public AiTrialEvidenceView AiTrialEvidence => TrialEvidence ?? AiTrialEvidenceView.Empty;
+
     public static CompanionSnapshot Empty { get; } = new(
         new(false, false, false, null, null, null),
         [],
@@ -307,6 +391,10 @@ public sealed record CompanionSnapshot(
 [JsonDerivedType(typeof(InterpretNaturalLanguageCommand), "interpretNaturalLanguage")]
 [JsonDerivedType(typeof(ConfirmNaturalLanguageCandidateCommand), "confirmNaturalLanguageCandidate")]
 [JsonDerivedType(typeof(DiscardNaturalLanguageCandidateCommand), "discardNaturalLanguageCandidate")]
+[JsonDerivedType(typeof(GenerateAiReviewDraftCommand), "generateAiReviewDraft")]
+[JsonDerivedType(typeof(ConfirmAiReviewDraftCommand), "confirmAiReviewDraft")]
+[JsonDerivedType(typeof(DiscardAiReviewDraftCommand), "discardAiReviewDraft")]
+[JsonDerivedType(typeof(RecordManualAiComparisonCommand), "recordManualAiComparison")]
 public abstract record CompanionCommand;
 
 public sealed record ConfigureWorktimeChannelCommand(
@@ -401,6 +489,33 @@ public sealed record InterpretNaturalLanguageCommand(
 public sealed record ConfirmNaturalLanguageCandidateCommand(Guid CandidateId) : CompanionCommand;
 
 public sealed record DiscardNaturalLanguageCandidateCommand(Guid CandidateId) : CompanionCommand;
+
+public sealed record GenerateAiReviewDraftCommand(
+    AiReviewKind Kind,
+    bool ApprovedEstimatedCostOverOneCny = false) : CompanionCommand;
+
+public sealed record ConfirmAiReviewDraftCommand(
+    Guid DraftId,
+    string ConfirmedText,
+    int QualityRating,
+    bool StructureReliable,
+    bool AmbiguityHandled,
+    bool NoOverreach,
+    bool PrivacyScopeConfirmed,
+    string? Note = null) : CompanionCommand;
+
+public sealed record DiscardAiReviewDraftCommand(Guid DraftId) : CompanionCommand;
+
+public sealed record RecordManualAiComparisonCommand(
+    Guid DraftId,
+    string Model,
+    string OutputText,
+    int QualityRating,
+    bool StructureReliable,
+    bool AmbiguityHandled,
+    bool NoOverreach,
+    bool PrivacyScopeConfirmed,
+    string? Note = null) : CompanionCommand;
 
 public sealed record CompanionOutcome(
     bool Success,

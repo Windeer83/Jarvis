@@ -85,7 +85,24 @@ internal sealed record AiProviderRequest(
     string Model,
     int MaxOutputTokens,
     DateTimeOffset Now,
-    SupervisionSnapshot? Supervision = null);
+    SupervisionSnapshot? Supervision = null,
+    AiReviewFacts? ReviewFacts = null);
+
+internal sealed record AiReviewFacts(
+    AiReviewKind Kind,
+    Guid SourceId,
+    DateOnly PeriodStart,
+    DateOnly PeriodEnd,
+    string FactsSummary,
+    IReadOnlyList<DailyReviewAnswerView> DailyAnswers,
+    IReadOnlyList<CommitmentReviewView> CommitmentReviews,
+    CycleTrendView? CycleTrends,
+    int FactItemCount);
+
+internal sealed record AiReviewDraftPayload(
+    string DraftText,
+    IReadOnlyList<string> Observations,
+    IReadOnlyList<string> SuggestedAdjustments);
 
 internal sealed record AiProviderResult(
     bool Success,
@@ -94,7 +111,8 @@ internal sealed record AiProviderResult(
     string? ErrorCode = null,
     string? Message = null,
     NaturalLanguageOperationCandidate? Candidate = null,
-    IReadOnlyList<string>? MissingInformation = null);
+    IReadOnlyList<string>? MissingInformation = null,
+    AiReviewDraftPayload? ReviewDraft = null);
 
 internal interface ICloudAiProvider
 {

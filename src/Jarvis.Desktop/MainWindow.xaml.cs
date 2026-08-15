@@ -23,11 +23,14 @@ public partial class MainWindow : Window
     private SupervisionSnapshot? _snapshot;
     private CompanionSnapshot? _companionSnapshot;
     private NaturalLanguageOperationCandidate? _naturalLanguageCandidate;
+    private AiReviewDraftView? _activeAiReviewDraft;
+    private Guid? _displayedAiReviewDraftId;
     private CommitmentView? _revisionSource;
     private readonly LocalReminderSoundGate _soundGate = new();
     private bool _refreshing;
     private bool _suppressSelectionEvents;
     private bool _naturalLanguageBusy;
+    private bool _aiReviewBusy;
 
     public MainWindow()
     {
@@ -1612,6 +1615,105 @@ public partial class MainWindow : Window
         await SendCompanionAsync(new ConfirmCycleFocusesCommand(focuses));
     }
 
+    private async void GenerateDailyAiReviewButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await GenerateAiReviewDraftAsync(AiReviewKind.Daily);
+
+    private async void GenerateCycleAiReviewButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await GenerateAiReviewDraftAsync(AiReviewKind.Cycle);
+
+    private async Task GenerateAiReviewDraftAsync(AiReviewKind kind)
+    {
+        if (_aiReviewBusy) return;
+        SetAiReviewBusy(true);
+        try
+        {
+            var command = new GenerateAiReviewDraftCommand(kind);
+            var outcome = await SendCompanionAsync(command);
+            if (outcome?.ErrorCode == "ai_cost_confirmation_required")
+            {
+                var confirmation = MessageBox.Show(
+                    $"{outcome.Message}\n\n仍要继续生成复盘草稿吗？",
+                    "确认本次 AI 费用",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+                if (confirmation == MessageBoxResult.Yes)
+                    await SendCompanionAsync(command with { ApprovedEstimatedCostOverOneCny = true });
+            }
+        }
+        finally
+        {
+            SetAiReviewBusy(false);
+        }
+    }
+
+    private async void ConfirmAiReviewDraftButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_activeAiReviewDraft is not { State: AiReviewDraftState.Pending } draft)
+        {
+            SetOperationStatus("当前没有可确认的 AI 复盘草稿。", isError: true);
+            return;
+        }
+        if (!TryReadAiReviewEvaluation(out var evaluation)) return;
+        await SendCompanionAsync(new ConfirmAiReviewDraftCommand(
+            draft.DraftId,
+            AiReviewDraftBox.Text,
+            evaluation.QualityRating,
+            evaluation.StructureReliable,
+            evaluation.AmbiguityHandled,
+            evaluation.NoOverreach,
+            evaluation.PrivacyScopeConfirmed,
+            evaluation.Note));
+    }
+
+    private async void DiscardAiReviewDraftButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_activeAiReviewDraft is not { State: AiReviewDraftState.Pending } draft)
+        {
+            SetOperationStatus("当前没有可放弃的 AI 复盘草稿。", isError: true);
+            return;
+        }
+        await SendCompanionAsync(new DiscardAiReviewDraftCommand(draft.DraftId));
+    }
+
+    private async void RecordManualAiComparisonButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_activeAiReviewDraft is not { State: AiReviewDraftState.Confirmed } draft)
+        {
+            SetOperationStatus("请先确认一份 AI 复盘草稿，再记录手动对照。", isError: true);
+            return;
+        }
+        if (!TryReadAiReviewEvaluation(out var evaluation)) return;
+        await SendCompanionAsync(new RecordManualAiComparisonCommand(
+            draft.DraftId,
+            "qwen3.7-flash",
+            ManualComparisonOutputBox.Text,
+            evaluation.QualityRating,
+            evaluation.StructureReliable,
+            evaluation.AmbiguityHandled,
+            evaluation.NoOverreach,
+            evaluation.PrivacyScopeConfirmed,
+            evaluation.Note));
+    }
+
+    private bool TryReadAiReviewEvaluation(out AiReviewEvaluationView evaluation)
+    {
+        if (!int.TryParse(AiReviewQualityBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var rating) ||
+            rating is < 1 or > 5)
+        {
+            SetOperationStatus("AI 复盘质量评分请填写 1–5。", isError: true);
+            evaluation = null!;
+            return false;
+        }
+        evaluation = new AiReviewEvaluationView(
+            rating,
+            AiReviewStructureBox.IsChecked == true,
+            AiReviewAmbiguityBox.IsChecked == true,
+            AiReviewNoOverreachBox.IsChecked == true,
+            AiReviewPrivacyBox.IsChecked == true,
+            AiReviewEvaluationNoteBox.Text.Trim());
+        return true;
+    }
+
     private async Task<CompanionOutcome?> SendCompanionAsync(CompanionCommand command)
     {
         var response = await _coreClient.SendAsync(new CoreRequest(
@@ -1715,12 +1817,65 @@ public partial class MainWindow : Window
         }
         if (cycle.ConfirmedFocuses.Count > 0)
             CycleFocusesBox.Text = string.Join(Environment.NewLine, cycle.ConfirmedFocuses);
+
+        _activeAiReviewDraft = snapshot.PendingAiReviewDraft ?? snapshot.ConfirmedAiReviewDrafts.FirstOrDefault();
+        if (_activeAiReviewDraft is null)
+        {
+            _displayedAiReviewDraftId = null;
+            AiReviewDraftStatusText.Text = "当前没有待确认的 AI 复盘草稿。";
+            AiReviewDraftBox.Clear();
+            ManualComparisonPromptBox.Clear();
+        }
+        else
+        {
+            if (_displayedAiReviewDraftId != _activeAiReviewDraft.DraftId)
+            {
+                AiReviewDraftBox.Text = _activeAiReviewDraft.ConfirmedText ?? _activeAiReviewDraft.DraftText;
+                _displayedAiReviewDraftId = _activeAiReviewDraft.DraftId;
+            }
+            AiReviewDraftStatusText.Text =
+                $"{_activeAiReviewDraft.Kind} · {_activeAiReviewDraft.State} · " +
+                $"{_activeAiReviewDraft.Provider}/{_activeAiReviewDraft.Model}\n" +
+                _activeAiReviewDraft.FactsScope;
+            ManualComparisonPromptBox.Text = _activeAiReviewDraft.AnonymizedComparisonPrompt ?? "当前记录没有手动对照提示。";
+        }
+        ConfirmAiReviewDraftButton.IsEnabled = !_aiReviewBusy &&
+                                               _activeAiReviewDraft?.State == AiReviewDraftState.Pending;
+        DiscardAiReviewDraftButton.IsEnabled = ConfirmAiReviewDraftButton.IsEnabled;
+        var trial = snapshot.AiTrialEvidence;
+        AiTrialEvidenceText.Text = trial.TrialStartedAt is null
+            ? "尚无复盘 AI 请求。"
+            : $"试运行 {trial.TrialStartedAt:yyyy-MM-dd} 至 {trial.TrialEndsAt:yyyy-MM-dd} · " +
+              $"请求 {trial.TotalRequests}（成功 {trial.SuccessfulRequests}/失败 {trial.FailedRequests}）· " +
+              $"每日 {trial.DailyRequests}/周期 {trial.CycleRequests} · 确认 {trial.ConfirmedDrafts} · " +
+              $"修改 {trial.ModifiedDrafts} · 手动对照 {trial.ManualComparisonCount} · " +
+              $"平均延迟 {trial.AverageLatencyMilliseconds:F0}ms · 费用 ¥{trial.TotalCostCny:F4} · " +
+              $"平均质量 {(trial.AverageQualityRating?.ToString("F1", CultureInfo.InvariantCulture) ?? "—")}\n" +
+              $"结构可靠 {Rate(trial.StructureReliableRate)} · 歧义处理 {Rate(trial.AmbiguityHandledRate)} · " +
+              $"无越权 {Rate(trial.NoOverreachRate)} · 最小事实范围 {Rate(trial.PrivacyScopeConfirmedRate)} · " +
+              $"模型 {string.Join(", ", trial.UsedModels)} · " +
+              (trial.TrialWindowComplete ? "两周窗口已完成" : "两周窗口进行中") +
+              (trial.ManualComparisonCount == 0
+                  ? ""
+                  : $"\n手动 Qwen：平均质量 {trial.ManualAverageQualityRating?.ToString("F1", CultureInfo.InvariantCulture) ?? "—"} · " +
+                    $"结构可靠 {Rate(trial.ManualStructureReliableRate)} · 歧义处理 {Rate(trial.ManualAmbiguityHandledRate)} · " +
+                    $"无越权 {Rate(trial.ManualNoOverreachRate)}");
+        AiReviewHistoryText.Text = snapshot.ConfirmedAiReviewDrafts.Count == 0
+            ? "尚无已确认 AI 复盘记录。"
+            : "已确认记录：\n" + string.Join("\n", snapshot.ConfirmedAiReviewDrafts.Select(item =>
+                $"{item.PeriodStart:yyyy-MM-dd}–{item.PeriodEnd:yyyy-MM-dd} · {item.Kind} · " +
+                $"{item.Model} · 质量 {item.Evaluation?.QualityRating.ToString(CultureInfo.InvariantCulture) ?? "—"} · " +
+                (item.ConfirmedText ?? item.DraftText)));
     }
+
+    private static string Rate(double? value) => value is null ? "—" : $"{value.Value:P0}";
 
     private void ClearCompanionProjection()
     {
         _companionSnapshot = null;
         _naturalLanguageCandidate = null;
+        _activeAiReviewDraft = null;
+        _displayedAiReviewDraftId = null;
         WorktimeStatusText.Text = "Core 未连接";
         MobileCardGrid.ItemsSource = null;
         CommitmentReviewList.ItemsSource = null;
@@ -1728,6 +1883,22 @@ public partial class MainWindow : Window
         AiStatusText.Text = "Core 未连接";
         DailyReviewQuestionText.Text = "Core 未连接";
         CycleReviewSummaryText.Text = "Core 未连接";
+        AiReviewDraftStatusText.Text = "Core 未连接";
+        AiReviewDraftBox.Clear();
+        AiTrialEvidenceText.Text = "Core 未连接";
+        AiReviewHistoryText.Text = "Core 未连接";
+    }
+
+    private void SetAiReviewBusy(bool busy)
+    {
+        _aiReviewBusy = busy;
+        AiReviewBusyBar.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        GenerateDailyAiReviewButton.IsEnabled = !busy;
+        GenerateCycleAiReviewButton.IsEnabled = !busy;
+        ConfirmAiReviewDraftButton.IsEnabled = !busy &&
+                                               _activeAiReviewDraft?.State == AiReviewDraftState.Pending;
+        DiscardAiReviewDraftButton.IsEnabled = ConfirmAiReviewDraftButton.IsEnabled;
+        if (busy) AiReviewDraftStatusText.Text = "正在生成 AI 复盘草稿，请稍后……";
     }
 
     private void SetNaturalLanguageBusy(bool busy)

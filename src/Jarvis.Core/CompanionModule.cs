@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Jarvis.Contracts;
@@ -127,6 +128,14 @@ internal sealed class CompanionModule : IAsyncDisposable
                     await ConfirmNaturalLanguageCandidateAsync(value, cancellationToken),
                 DiscardNaturalLanguageCandidateCommand value =>
                     await DiscardNaturalLanguageCandidateAsync(value, cancellationToken),
+                GenerateAiReviewDraftCommand value =>
+                    await GenerateAiReviewDraftAsync(value, cancellationToken),
+                ConfirmAiReviewDraftCommand value =>
+                    await ConfirmAiReviewDraftAsync(value, cancellationToken),
+                DiscardAiReviewDraftCommand value =>
+                    await DiscardAiReviewDraftAsync(value, cancellationToken),
+                RecordManualAiComparisonCommand value =>
+                    await RecordManualAiComparisonAsync(value, cancellationToken),
                 _ => Fail("companion_command_unknown", "Core 无法识别这项助手操作。")
             };
             if (worktimeEventId is not null)
@@ -215,7 +224,10 @@ internal sealed class CompanionModule : IAsyncDisposable
                 spend >= 15m, spend >= 24m, _aiError, _aiRequestInProgress, modelPreference),
             await _store.ReadRecentAiUsageAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadRecentChatAsync(cancellationToken).ConfigureAwait(false),
-            await _store.ReadPendingCandidateAsync(cancellationToken).ConfigureAwait(false));
+            await _store.ReadPendingCandidateAsync(cancellationToken).ConfigureAwait(false),
+            await _store.ReadPendingAiReviewDraftAsync(cancellationToken).ConfigureAwait(false),
+            await _store.ReadConfirmedAiReviewDraftsAsync(cancellationToken).ConfigureAwait(false),
+            await _store.ReadAiTrialEvidenceAsync(_clock.Now, cancellationToken).ConfigureAwait(false));
     }
 
     public async ValueTask DisposeAsync()
@@ -1484,13 +1496,196 @@ internal sealed class CompanionModule : IAsyncDisposable
         return Ok("候选操作已放弃，正式状态没有变化。", await SnapshotAsync(cancellationToken));
     }
 
+    private async Task<CompanionOutcome> GenerateAiReviewDraftAsync(
+        GenerateAiReviewDraftCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (!Enum.IsDefined(command.Kind))
+            return Fail("ai_review_kind_invalid", "未知的复盘辅助类型。");
+        var factsResult = await BuildAiReviewFactsAsync(command.Kind, cancellationToken).ConfigureAwait(false);
+        if (factsResult.Error is not null) return factsResult.Error;
+        var facts = factsResult.Facts!;
+        var purpose = command.Kind == AiReviewKind.Daily
+            ? AiRequestPurpose.DailyReviewAssist
+            : AiRequestPurpose.CycleReviewAssist;
+        var requestId = Guid.NewGuid();
+        var ai = await CallAiAsync(
+            purpose,
+            "根据 Core 提供的当前复盘事实生成一份待确认草稿。",
+            2048,
+            command.ApprovedEstimatedCostOverOneCny,
+            cancellationToken,
+            requestId,
+            facts).ConfigureAwait(false);
+        if (!ai.Outcome.Success) return ai.Outcome;
+        if (ai.ProviderResult?.ReviewDraft is null)
+            return Fail("review_draft_missing", "云端模型没有返回可验证的复盘草稿。");
+        var preference = await _store.ReadAiModelPreferenceAsync(cancellationToken).ConfigureAwait(false);
+        var profile = SiliconFlowModelCatalog.Select(purpose, preference);
+        var draft = new AiReviewDraftView(
+            Guid.NewGuid(), command.Kind, facts.SourceId, requestId,
+            facts.PeriodStart, facts.PeriodEnd, _clock.Now, AiReviewDraftState.Pending,
+            SiliconFlowModelCatalog.ProviderName, profile.Model,
+            factsResult.Scope!, facts.FactItemCount, ai.ProviderResult.ReviewDraft.DraftText,
+            AnonymizedComparisonPrompt: BuildAnonymizedComparisonPrompt(facts));
+        await _store.SaveAiReviewDraftAsync(
+            draft, ai.ProviderResult.ReviewDraft, cancellationToken).ConfigureAwait(false);
+        return Ok("AI 复盘草稿已生成；确认或修改前不会进入正式复盘记录。",
+            await SnapshotAsync(cancellationToken));
+    }
+
+    private async Task<CompanionOutcome> ConfirmAiReviewDraftAsync(
+        ConfirmAiReviewDraftCommand command,
+        CancellationToken cancellationToken)
+    {
+        var text = command.ConfirmedText.Trim();
+        if (text.Length == 0) return Fail("ai_review_text_required", "确认后的复盘文字不能为空。");
+        if (command.QualityRating is < 1 or > 5)
+            return Fail("ai_review_rating_invalid", "试运行质量评分必须是 1–5 分。");
+        var evaluation = new AiReviewEvaluationView(
+            command.QualityRating, command.StructureReliable, command.AmbiguityHandled,
+            command.NoOverreach, command.PrivacyScopeConfirmed, command.Note?.Trim());
+        if (!await _store.ConfirmAiReviewDraftAsync(
+                command.DraftId, text, evaluation, _clock.Now, cancellationToken).ConfigureAwait(false))
+            return Fail("ai_review_draft_stale", "这份 AI 复盘草稿已经确认、放弃或不存在。");
+        return Ok("复盘草稿已由用户确认并进入正式记录。", await SnapshotAsync(cancellationToken));
+    }
+
+    private async Task<CompanionOutcome> DiscardAiReviewDraftAsync(
+        DiscardAiReviewDraftCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (!await _store.DiscardAiReviewDraftAsync(command.DraftId, cancellationToken).ConfigureAwait(false))
+            return Fail("ai_review_draft_stale", "这份 AI 复盘草稿已经确认、放弃或不存在。");
+        return Ok("AI 复盘草稿已放弃，正式记录没有变化。", await SnapshotAsync(cancellationToken));
+    }
+
+    private async Task<CompanionOutcome> RecordManualAiComparisonAsync(
+        RecordManualAiComparisonCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(command.Model.Trim(), "qwen3.7-flash", StringComparison.OrdinalIgnoreCase))
+            return Fail("manual_comparison_model_invalid", "手动脱敏对照当前只记录 qwen3.7-flash。");
+        if (string.IsNullOrWhiteSpace(command.OutputText))
+            return Fail("manual_comparison_output_required", "请粘贴手动对照结果。");
+        if (command.QualityRating is < 1 or > 5)
+            return Fail("manual_comparison_rating_invalid", "对照质量评分必须是 1–5 分。");
+        if (!command.PrivacyScopeConfirmed)
+            return Fail("manual_comparison_privacy_unconfirmed", "请先检查并确认手动对照提示只包含必要且已脱敏的复盘事实。");
+        if (!await _store.RecordManualAiComparisonAsync(
+                command with { Model = "qwen3.7-flash", OutputText = command.OutputText.Trim() },
+                _clock.Now, cancellationToken).ConfigureAwait(false))
+            return Fail("manual_comparison_draft_invalid", "只能为已确认且包含脱敏提示的草稿记录对照。");
+        return Ok("手动 Qwen 脱敏对照证据已记录；Jarvis 没有自动调用或切换供应商。",
+            await SnapshotAsync(cancellationToken));
+    }
+
+    private async Task<(AiReviewFacts? Facts, string? Scope, CompanionOutcome? Error)> BuildAiReviewFactsAsync(
+        AiReviewKind kind,
+        CancellationToken cancellationToken)
+    {
+        if (kind == AiReviewKind.Daily)
+        {
+            var daily = await _store.ReadDailyReviewAsync(cancellationToken).ConfigureAwait(false);
+            if (daily.SessionId is null || daily.ReviewDate is null ||
+                daily.State is not (ReviewSessionState.InProgress or ReviewSessionState.Completed))
+                return (null, null, Fail("daily_review_not_ready", "请先开始每日复盘，再生成 AI 草稿。"));
+            var factsSummary = await _store.CalculateDailyFactsAsync(
+                daily.ReviewDate.Value, cancellationToken).ConfigureAwait(false);
+            var reviews = (await _store.ReadCommitmentReviewsAsync(cancellationToken).ConfigureAwait(false))
+                .Where(item => DateOnly.FromDateTime(item.RequestedAt.ToLocalTime().DateTime) == daily.ReviewDate.Value)
+                .ToArray();
+            var facts = new AiReviewFacts(
+                AiReviewKind.Daily, daily.SessionId.Value, daily.ReviewDate.Value, daily.ReviewDate.Value,
+                factsSummary, daily.AnswerDetails, reviews, null,
+                daily.AnswerDetails.Count + reviews.Length + (factsSummary.Length > 0 ? 1 : 0));
+            return (facts,
+                $"每日复盘 {daily.ReviewDate:yyyy-MM-dd}；{daily.AnswerDetails.Count} 条原始回答；" +
+                $"{reviews.Length} 条承诺回顾；不含聊天历史或完整监督数据库", null);
+        }
+
+        var cycle = await _store.ReadCycleReviewAsync(cancellationToken).ConfigureAwait(false);
+        if (cycle.PeriodStart is null || cycle.PeriodEnd is null || cycle.Trends is null ||
+            cycle.State is not (ReviewSessionState.InProgress or ReviewSessionState.Completed))
+            return (null, null, Fail("cycle_review_not_ready", "请先开始周期复盘，再生成 AI 草稿。"));
+        var sourceId = await _store.FindCycleSessionIdAsync(
+            cycle.PeriodStart.Value, cycle.PeriodEnd.Value, cancellationToken).ConfigureAwait(false);
+        var factCount = cycle.Trends.Commitments.Count + cycle.Trends.DailyReviews.Count + 1;
+        var cycleFacts = new AiReviewFacts(
+            AiReviewKind.Cycle, sourceId, cycle.PeriodStart.Value, cycle.PeriodEnd.Value,
+            cycle.Summary, [], [], cycle.Trends, factCount);
+        return (cycleFacts,
+            $"周期复盘 {cycle.PeriodStart:yyyy-MM-dd}–{cycle.PeriodEnd:yyyy-MM-dd}；" +
+            $"{cycle.Trends.Commitments.Count} 条承诺明细；{cycle.Trends.DailyReviews.Count} 场每日复盘；" +
+            "不含聊天历史或完整监督数据库", null);
+    }
+
+    private static string BuildAnonymizedComparisonPrompt(AiReviewFacts facts)
+    {
+        var projection = new
+        {
+            kind = facts.Kind.ToString(),
+            periodStart = facts.PeriodStart,
+            periodEnd = facts.PeriodEnd,
+            factsSummary = facts.FactsSummary,
+            dailyAnswers = facts.DailyAnswers.Select(item => new
+            {
+                question = item.Question.ToString(),
+                item.RawText
+            }),
+            commitmentReviews = facts.CommitmentReviews.Select(item => new
+            {
+                state = item.State.ToString(),
+                item.RequestedAt,
+                item.DeferredUntil,
+                assessment = item.Assessment?.ToString(),
+                item.RawText,
+                item.AnsweredAt
+            }),
+            trends = facts.CycleTrends is null ? null : new
+            {
+                facts.CycleTrends.PlannedCommitments,
+                facts.CycleTrends.ReviewedCommitments,
+                facts.CycleTrends.PlannedMinutes,
+                facts.CycleTrends.RelatedMinutes,
+                facts.CycleTrends.DistractingMinutes,
+                facts.CycleTrends.RestMinutes,
+                facts.CycleTrends.DeferredReviews,
+                facts.CycleTrends.NoResponseCount,
+                facts.CycleTrends.ObservedMinutes,
+                commitments = facts.CycleTrends.Commitments.Select(item => new
+                {
+                    item.LocalDate,
+                    item.InputGoal,
+                    item.OutcomeGoal,
+                    item.PlannedMinutes,
+                    item.RelatedMinutes,
+                    item.DistractingMinutes,
+                    item.RestMinutes,
+                    reviewState = item.ReviewState?.ToString(),
+                    assessment = item.Assessment?.ToString(),
+                    item.ReviewText
+                }),
+                dailyReviews = facts.CycleTrends.DailyReviews.Select(item => new
+                {
+                    item.ReviewDate,
+                    state = item.State.ToString(),
+                    item.AnswerCount
+                })
+            }
+        };
+        return "这是用户手动启动的脱敏模型对照。只根据以下复盘事实生成待确认草稿，不作人格判断：\n" +
+               System.Text.Json.JsonSerializer.Serialize(projection, CoreProtocol.Json);
+    }
+
     private async Task<(CompanionOutcome Outcome, AiProviderResult? ProviderResult)> CallAiAsync(
         AiRequestPurpose purpose,
         string text,
         int maxOutputTokens,
         bool approvedOverOneCny,
         CancellationToken cancellationToken,
-        Guid? stableRequestId = null)
+        Guid? stableRequestId = null,
+        AiReviewFacts? reviewFacts = null)
     {
         var requestId = stableRequestId ?? Guid.NewGuid();
         if (stableRequestId is not null)
@@ -1514,7 +1709,10 @@ internal sealed class CompanionModule : IAsyncDisposable
         var profile = SiliconFlowModelCatalog.Select(purpose, preference);
         var aiRequest = new AiProviderRequest(
             purpose, text, profile.Model, maxOutputTokens, _clock.Now,
-            await _supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false));
+            purpose == AiRequestPurpose.NaturalLanguageOperation
+                ? await _supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false)
+                : null,
+            reviewFacts);
         var estimate = _aiProvider.EstimateCostCny(aiRequest);
         if (estimate > 1m && !approvedOverOneCny)
             return (Fail("ai_cost_confirmation_required", $"本次预计约 {estimate:F2} 元，需要明确确认后再调用。"), null);
@@ -1535,6 +1733,7 @@ internal sealed class CompanionModule : IAsyncDisposable
         }
 
         AiProviderResult providerResult;
+        var stopwatch = Stopwatch.StartNew();
         _aiRequestInProgress = true;
         try
         {
@@ -1548,6 +1747,7 @@ internal sealed class CompanionModule : IAsyncDisposable
         }
         finally
         {
+            stopwatch.Stop();
             _aiRequestInProgress = false;
         }
 
@@ -1556,7 +1756,7 @@ internal sealed class CompanionModule : IAsyncDisposable
             requestId, _clock.Now, purpose, SiliconFlowModelCatalog.ProviderName, profile.Model,
             providerResult.Usage.InputTokens, providerResult.Usage.OutputTokens,
             providerResult.Usage.CacheHitInputTokens, SiliconFlowModelCatalog.PriceVersion, cost,
-            providerResult.Success);
+            providerResult.Success, checked((int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds)));
         await _store.SettleAiRequestAsync(record, providerResult.ErrorCode, providerResult, cancellationToken)
             .ConfigureAwait(false);
         return ProviderOutcome(providerResult);

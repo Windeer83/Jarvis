@@ -82,7 +82,7 @@ public sealed class SqliteMigrationScenarios
         await connection.OpenAsync();
         await using var version = connection.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
-        Assert.Equal(6L, (long)(await version.ExecuteScalarAsync())!);
+        Assert.Equal(7L, (long)(await version.ExecuteScalarAsync())!);
         await using var planningTables = connection.CreateCommand();
         planningTables.CommandText = """
             SELECT count(*)
@@ -128,7 +128,7 @@ public sealed class SqliteMigrationScenarios
             await AssertVersionThreeDataWasBackfilledAsync(module);
         }
 
-        await AssertUserVersionAsync(database.Path, 6);
+        await AssertUserVersionAsync(database.Path, 7);
 
         await using (var reopened = await SupervisionModule.OpenAsync(
                          database.Path, clock, new FakeActivitySource(), new FakeReminderSink()))
@@ -136,7 +136,7 @@ public sealed class SqliteMigrationScenarios
             await AssertVersionThreeDataWasBackfilledAsync(reopened);
         }
 
-        await AssertUserVersionAsync(database.Path, 6);
+        await AssertUserVersionAsync(database.Path, 7);
     }
 
     [Fact]
@@ -177,7 +177,63 @@ public sealed class SqliteMigrationScenarios
         var companionStore = new SqliteCompanionStore(database.Path);
         var migrated = Assert.Single(await companionStore.ReadMobileCardsAsync(CancellationToken.None));
         Assert.Equal(TimeSpan.FromMinutes(20), migrated.CountedDeviation);
-        await AssertUserVersionAsync(database.Path, 6);
+        await AssertUserVersionAsync(database.Path, 7);
+    }
+
+    [Fact]
+    public async Task Version_six_ai_usage_migrates_to_review_evidence_and_reopens_idempotently()
+    {
+        using var database = new TemporaryDatabase();
+        await CreateVersionSixDatabaseAsync(database.Path);
+
+        var store = new SqliteCommitmentStore(database.Path);
+        await store.InitializeAsync(CancellationToken.None);
+        await AssertUserVersionAsync(database.Path, 7);
+
+        await using (var connection = new SqliteConnection($"Data Source={database.Path};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using var preserved = connection.CreateCommand();
+            preserved.CommandText = "SELECT model, latency_milliseconds FROM ai_usage WHERE request_id='77777777-7777-7777-7777-777777777777';";
+            await using var reader = await preserved.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("deepseek-ai/DeepSeek-V4-Flash", reader.GetString(0));
+            Assert.Equal(0, reader.GetInt32(1));
+
+            await using var schema = connection.CreateCommand();
+            schema.CommandText = "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('ai_review_drafts','manual_ai_comparisons');";
+            Assert.Equal(2L, (long)(await schema.ExecuteScalarAsync())!);
+        }
+
+        await store.InitializeAsync(CancellationToken.None);
+        await AssertUserVersionAsync(database.Path, 7);
+    }
+
+    [Fact]
+    public async Task Failed_version_seven_migration_rolls_back_latency_column_review_tables_and_user_version()
+    {
+        using var database = new TemporaryDatabase();
+        await CreateVersionSixDatabaseAsync(database.Path, createReviewDraftConflict: true);
+        await using var connection = new SqliteConnection($"Data Source={database.Path};Pooling=False");
+        await connection.OpenAsync();
+        await using var migration = (SqliteTransaction)await connection.BeginTransactionAsync();
+
+        await Assert.ThrowsAsync<SqliteException>(() => SqliteCommitmentStore.MigrateToVersionSevenAsync(
+            connection, migration, CancellationToken.None));
+        await migration.RollbackAsync();
+
+        await using var version = connection.CreateCommand();
+        version.CommandText = "PRAGMA user_version;";
+        Assert.Equal(6L, (long)(await version.ExecuteScalarAsync())!);
+        await using var latency = connection.CreateCommand();
+        latency.CommandText = "SELECT count(*) FROM pragma_table_info('ai_usage') WHERE name='latency_milliseconds';";
+        Assert.Equal(0L, (long)(await latency.ExecuteScalarAsync())!);
+        await using var comparison = connection.CreateCommand();
+        comparison.CommandText = "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='manual_ai_comparisons';";
+        Assert.Equal(0L, (long)(await comparison.ExecuteScalarAsync())!);
+        await using var deliberateConflict = connection.CreateCommand();
+        deliberateConflict.CommandText = "SELECT count(*) FROM pragma_table_info('ai_review_drafts') WHERE name='preexisting';";
+        Assert.Equal(1L, (long)(await deliberateConflict.ExecuteScalarAsync())!);
     }
 
     [Fact]
@@ -500,6 +556,48 @@ public sealed class SqliteMigrationScenarios
         {
             command.CommandText = "CREATE TABLE supervision_responses (preexisting TEXT);";
             await command.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static async Task CreateVersionSixDatabaseAsync(
+        string path,
+        bool createReviewDraftConflict = false)
+    {
+        await CreateVersionThreeDatabaseAsync(path);
+        await using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        await connection.OpenAsync();
+        await using (var migration = (SqliteTransaction)await connection.BeginTransactionAsync())
+        {
+            await SqliteCommitmentStore.MigrateToVersionFourAsync(
+                connection, migration, CancellationToken.None);
+            await SqliteCommitmentStore.MigrateToVersionFiveAsync(
+                connection, migration, CancellationToken.None);
+            await SqliteCommitmentStore.MigrateToVersionSixAsync(
+                connection, migration, CancellationToken.None);
+            await migration.CommitAsync();
+        }
+
+        await using (var usage = connection.CreateCommand())
+        {
+            usage.CommandText = """
+                INSERT INTO ai_usage(
+                    request_id, requested_at_utc, purpose, provider, model,
+                    input_tokens, output_tokens, cache_hit_input_tokens, price_version,
+                    cost_cny, success, error_code, state, result_json)
+                VALUES(
+                    '77777777-7777-7777-7777-777777777777',
+                    '2026-08-15T01:00:00.0000000+00:00',0,'siliconflow',
+                    'deepseek-ai/DeepSeek-V4-Flash',10,20,0,'2026-08-01',
+                    '0.001',1,NULL,'settled',NULL);
+                """;
+            await usage.ExecuteNonQueryAsync();
+        }
+
+        if (createReviewDraftConflict)
+        {
+            await using var conflict = connection.CreateCommand();
+            conflict.CommandText = "CREATE TABLE ai_review_drafts(preexisting TEXT);";
+            await conflict.ExecuteNonQueryAsync();
         }
     }
 
