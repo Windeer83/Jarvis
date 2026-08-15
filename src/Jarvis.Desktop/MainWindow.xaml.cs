@@ -1491,24 +1491,45 @@ public partial class MainWindow : Window
 
     private async void SubmitCommitmentReviewButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        var commitment = ResolveSelectedReviewCommitment();
+        if (commitment is null)
         {
-            SetOperationStatus("请先选择一条待回顾承诺。", isError: true);
+            const string message = "请先在下方选择一条待回顾承诺；如果只有一条，Jarvis 会自动选中。";
+            CommitmentReviewStatusText.Text = message;
+            SetOperationStatus(message, isError: true);
             return;
         }
 
-        await SendCompanionAsync(new SubmitCommitmentReviewCommand(
-            commitment.Id,
-            CommitmentReviewTextBox.Text,
-            CompletionAssessmentBox.SelectedItem is CompletionAssessment assessment
-                ? assessment
-                : null));
-        CommitmentReviewTextBox.Clear();
+        SubmitCommitmentReviewButton.IsEnabled = false;
+        CommitmentReviewStatusText.Text = "正在提交回顾，请稍候……";
+        try
+        {
+            var outcome = await SendCompanionAsync(new SubmitCommitmentReviewCommand(
+                commitment.Id,
+                CommitmentReviewTextBox.Text,
+                CompletionAssessmentBox.SelectedItem is CompletionAssessment assessment
+                    ? assessment
+                    : null));
+            if (outcome?.Success == true)
+            {
+                CommitmentReviewTextBox.Clear();
+                CommitmentReviewStatusText.Text = outcome.Message ?? "回顾已保存。";
+            }
+            else
+            {
+                CommitmentReviewStatusText.Text = outcome?.Message ?? "回顾未提交，请按提示修改后重试。";
+            }
+        }
+        finally
+        {
+            SubmitCommitmentReviewButton.IsEnabled = true;
+        }
     }
 
     private async void DeferCommitmentReviewButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        var commitment = ResolveSelectedReviewCommitment();
+        if (commitment is null)
         {
             SetOperationStatus("请先选择一条待回顾承诺。", isError: true);
             return;
@@ -1518,7 +1539,8 @@ public partial class MainWindow : Window
 
     private async void SkipCommitmentReviewButton_Click(object sender, RoutedEventArgs eventArgs)
     {
-        if (CommitmentGrid.SelectedItem is not CommitmentView commitment)
+        var commitment = ResolveSelectedReviewCommitment();
+        if (commitment is null)
         {
             SetOperationStatus("请先选择一条待回顾承诺。", isError: true);
             return;
@@ -1646,14 +1668,24 @@ public partial class MainWindow : Window
         WorktimeStatusText.Text = !channel.Enabled
             ? "飞书通道未启用"
             : $"监听：{(channel.ListenerReady ? "就绪" : "未就绪")} · 用户：{(channel.UserBound ? $"已绑定 …{channel.BoundUserSuffix}" : "未绑定")}" +
-              (string.IsNullOrWhiteSpace(channel.LastError) ? "" : $" · {channel.LastError}");
+              (string.IsNullOrWhiteSpace(channel.LastError) ? "" : $" · {channel.LastError}") +
+              "\n手机提醒仅在连续偏离达到承诺中设置的首次手机阈值后发送；不会在监督开始或结束时自动发送。";
         MobileCardGrid.ItemsSource = snapshot.MobileCards.OrderByDescending(item => item.SentAt).ToArray();
 
-        CommitmentReviewList.ItemsSource = snapshot.CommitmentReviews
+        var previouslySelectedId = (CommitmentReviewList.SelectedItem as CommitmentReviewChoice)?.Review.CommitmentId;
+        var reviewChoices = snapshot.CommitmentReviews
             .OrderByDescending(item => item.RequestedAt)
-            .Select(item => $"{item.CommitmentId.ToString()[..8]} · v{item.CommitmentVersion} · {item.State}" +
-                            (item.Assessment is null ? "" : $" · {item.Assessment}"))
+            .Select(item => new CommitmentReviewChoice(
+                item,
+                $"{item.CommitmentId.ToString()[..8]} · v{item.CommitmentVersion} · {item.State}" +
+                (item.Assessment is null ? "" : $" · {item.Assessment}")))
             .ToArray();
+        CommitmentReviewList.ItemsSource = reviewChoices;
+        var selectedChoice = reviewChoices.SingleOrDefault(item => item.Review.CommitmentId == previouslySelectedId);
+        var actionableChoices = reviewChoices.Where(item => item.Review.State is not
+            (CommitmentReviewState.Completed or CommitmentReviewState.Skipped)).ToArray();
+        CommitmentReviewList.SelectedItem = selectedChoice ??
+            (actionableChoices.Length == 1 ? actionableChoices[0] : null);
         DailyReviewTimeBox.Text = snapshot.DailyReview.ScheduledLocalTime.ToString("HH:mm", CultureInfo.InvariantCulture);
         DailyReviewQuestionText.Text = snapshot.DailyReview.FactsSummary + "\n\n" + DailyQuestion(snapshot.DailyReview);
 
@@ -1851,6 +1883,18 @@ public partial class MainWindow : Window
     private CommitmentView? ActiveCommitment() => _snapshot?.Commitments.SingleOrDefault(
         commitment => commitment.Id == _snapshot.ActiveComputerCommitmentId);
 
+    private CommitmentView? ResolveSelectedReviewCommitment()
+    {
+        var reviewId = (CommitmentReviewList.SelectedItem as CommitmentReviewChoice)?.Review.CommitmentId;
+        if (reviewId is not null)
+        {
+            return (_snapshot?.Commitments ?? CommitmentGrid.Items.Cast<CommitmentView>().ToArray())
+                .SingleOrDefault(item => item.Id == reviewId.Value);
+        }
+
+        return CommitmentGrid.SelectedItem as CommitmentView;
+    }
+
     public void RestoreConfigurationWindow()
     {
         Show();
@@ -1883,6 +1927,11 @@ public partial class MainWindow : Window
     private sealed record RuleScopeChoice(string Label, ActivityRuleScope Scope);
 
     private sealed record PlanChoice(RecurrencePlanView Plan, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    private sealed record CommitmentReviewChoice(CommitmentReviewView Review, string Label)
     {
         public override string ToString() => Label;
     }
