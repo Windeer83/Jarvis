@@ -1,5 +1,7 @@
 # T15–T20 手机闭环、复盘与自然语言操作
 
+用户人工验收请从 [`t15-t20-manual-validation.md`](t15-t20-manual-validation.md) 开始；本文保留交付边界、实现说明和自动化映射。
+
 ## 交付边界
 
 这次纵切在既有 Core/Desktop/SQLite 架构内完成六项连续能力：
