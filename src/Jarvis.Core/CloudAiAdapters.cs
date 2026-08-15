@@ -252,8 +252,14 @@ internal sealed class SiliconFlowCloudAiProvider(HttpClient? httpClient = null) 
         AiRequestPurpose.NaturalLanguageOperation => CandidateSystemPrompt(request),
         AiRequestPurpose.DailyReviewAssist or AiRequestPurpose.CycleReviewAssist =>
             ReviewSystemPrompt(request),
-        _ => "你是 Jarvis 的简洁中文助手。只回答当前用户问题，不虚构监督事实。"
+        _ => BasicChatSystemPrompt(request)
     };
+
+    private static string BasicChatSystemPrompt(AiProviderRequest request) => $"""
+        你是 Jarvis 的中文执行监督伙伴。只回答当前用户问题，不虚构监督事实，
+        不声称已经创建、修改或完成正式操作；需要正式变化时只能建议用户生成候选并确认。
+        {request.PersonaInstructions}
+        """;
 
     private static string ReviewSystemPrompt(AiProviderRequest request)
     {

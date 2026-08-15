@@ -32,6 +32,7 @@ public partial class DesktopPetWindow : Window
     private bool _applicationExit;
     private bool _hotkeyRegistered;
     private DesktopPetVisualState? _visualState;
+    private Guid? _reportedPromptId;
 
     public DesktopPetWindow(DesktopPetSettingsStore? settingsStore = null)
     {
@@ -61,11 +62,18 @@ public partial class DesktopPetWindow : Window
     public event EventHandler? CreateCommitmentRequested;
     public event EventHandler? StartRestRequested;
     public event EventHandler? ExitRequested;
+    public event EventHandler<DesktopPetProfessionalModeChangedEventArgs>? ProfessionalModeChanged;
+    public event EventHandler<ProactivePromptPresentedEventArgs>? ProactivePromptPresented;
 
     public DesktopPetSettings Settings => _settings;
 
     public void ApplyProjection(DesktopPetProjection projection)
     {
+        if (_projection.ProactivePromptId != projection.ProactivePromptId)
+        {
+            _reportedPromptId = null;
+        }
+
         _projection = projection;
         StatusText.Text = projection.Status;
         DetailText.Text = projection.Detail;
@@ -78,6 +86,7 @@ public partial class DesktopPetWindow : Window
         }
         ToolTip = projection.Status + Environment.NewLine + projection.Detail;
         UpdateAutomaticVisibility();
+        TryReportPromptPresentation();
     }
 
     public void ShowPet()
@@ -87,6 +96,28 @@ public partial class DesktopPetWindow : Window
         Opacity = 1;
         IsHitTestVisible = !_settings.ClickThrough;
         Topmost = true;
+        UpdateAutomaticVisibility();
+        TryReportPromptPresentation();
+    }
+
+    public void RetryProactivePromptPresentation(Guid promptId)
+    {
+        if (_reportedPromptId == promptId)
+        {
+            _reportedPromptId = null;
+        }
+    }
+
+    public void SetProfessionalMode(bool enabled)
+    {
+        if (_settings.ProfessionalMode == enabled)
+        {
+            return;
+        }
+
+        _settings = _settings with { ProfessionalMode = enabled };
+        ProfessionalModeMenu.IsChecked = enabled;
+        SaveSettings();
         UpdateAutomaticVisibility();
     }
 
@@ -219,6 +250,9 @@ public partial class DesktopPetWindow : Window
         _settings = _settings with { ProfessionalMode = ProfessionalModeMenu.IsChecked };
         SaveSettings();
         UpdateAutomaticVisibility();
+        ProfessionalModeChanged?.Invoke(
+            this,
+            new DesktopPetProfessionalModeChangedEventArgs(_settings.ProfessionalMode));
     }
 
     private void ClickThroughMenu_Click(object sender, RoutedEventArgs eventArgs)
@@ -296,16 +330,31 @@ public partial class DesktopPetWindow : Window
         var process = DesktopPetSettings.NormalizeProcess(ForegroundPresentationDetector.ForegroundProcessName());
         var hiddenForProcess = _settings.HiddenProcesses.Contains(process, StringComparer.OrdinalIgnoreCase);
         var professionalApplication = _settings.ProfessionalMode && IsProfessionalApplication(process);
-        var shouldHide = _settings.ProfessionalMode && ForegroundPresentationDetector.IsFullscreen() ||
+        var shouldHide = ForegroundPresentationDetector.IsFullscreen() ||
                          hiddenForProcess || professionalApplication;
         if (shouldHide == _automaticHidden)
         {
+            TryReportPromptPresentation();
             return;
         }
 
         _automaticHidden = shouldHide;
         Opacity = shouldHide ? 0 : 1;
         IsHitTestVisible = !shouldHide && !_settings.ClickThrough;
+        TryReportPromptPresentation();
+    }
+
+    private void TryReportPromptPresentation()
+    {
+        if (!IsVisible || _automaticHidden || Opacity <= 0 ||
+            _projection.ProactivePromptId is not { } promptId ||
+            _reportedPromptId == promptId)
+        {
+            return;
+        }
+
+        _reportedPromptId = promptId;
+        ProactivePromptPresented?.Invoke(this, new ProactivePromptPresentedEventArgs(promptId));
     }
 
     private void AutoMoveWithinMonitor()

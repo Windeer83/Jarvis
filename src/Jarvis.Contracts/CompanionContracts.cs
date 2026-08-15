@@ -313,6 +313,49 @@ public sealed record ChatMessageView(
     string Role,
     string Text);
 
+public sealed record CompanionPersonaSettingsView(
+    bool ProfessionalMode,
+    bool ProactiveEnabled,
+    string? PreferredAddress,
+    IReadOnlyList<string> DisallowedAddresses,
+    string DislikedTone,
+    string InteractionBoundary)
+{
+    public static CompanionPersonaSettingsView Default { get; } = new(
+        false,
+        true,
+        null,
+        [],
+        "不使用生气、吃醋、冷落、羞辱、愧疚或失落追问",
+        "不产生亲密度、照顾义务、关系承诺或情绪惩罚");
+}
+
+public sealed record ProactiveCompanionPromptView(
+    Guid PromptId,
+    string Text,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? ExpiresAt,
+    DateTimeOffset? PresentedAt = null);
+
+public sealed record CompanionPersonaView(
+    CompanionPersonaSettingsView Settings,
+    ProactiveCompanionPromptView? CurrentPrompt,
+    int TotalResponses,
+    int TotalIgnores,
+    int ConsecutiveIgnores,
+    int TodayPromptCount,
+    DateOnly LocalDate)
+{
+    public static CompanionPersonaView Default { get; } = new(
+        CompanionPersonaSettingsView.Default,
+        null,
+        0,
+        0,
+        0,
+        0,
+        DateOnly.MinValue);
+}
+
 public sealed record NaturalLanguageOperationCandidate(
     Guid CandidateId,
     CandidateOperationKind Kind,
@@ -342,13 +385,17 @@ public sealed record CompanionSnapshot(
     NaturalLanguageOperationCandidate? PendingCandidate,
     AiReviewDraftView? PendingAiReviewDraft = null,
     IReadOnlyList<AiReviewDraftView>? AiReviewDraftHistory = null,
-    AiTrialEvidenceView? TrialEvidence = null)
+    AiTrialEvidenceView? TrialEvidence = null,
+    CompanionPersonaView? Persona = null)
 {
     [JsonIgnore]
     public IReadOnlyList<AiReviewDraftView> ConfirmedAiReviewDrafts => AiReviewDraftHistory ?? [];
 
     [JsonIgnore]
     public AiTrialEvidenceView AiTrialEvidence => TrialEvidence ?? AiTrialEvidenceView.Empty;
+
+    [JsonIgnore]
+    public CompanionPersonaView PersonaProjection => Persona ?? CompanionPersonaView.Default;
 
     public static CompanionSnapshot Empty { get; } = new(
         new(false, false, false, null, null, null),
@@ -395,6 +442,10 @@ public sealed record CompanionSnapshot(
 [JsonDerivedType(typeof(ConfirmAiReviewDraftCommand), "confirmAiReviewDraft")]
 [JsonDerivedType(typeof(DiscardAiReviewDraftCommand), "discardAiReviewDraft")]
 [JsonDerivedType(typeof(RecordManualAiComparisonCommand), "recordManualAiComparison")]
+[JsonDerivedType(typeof(ConfigureCompanionPersonaCommand), "configureCompanionPersona")]
+[JsonDerivedType(typeof(AcknowledgeProactiveCompanionCommand), "acknowledgeProactiveCompanion")]
+[JsonDerivedType(typeof(RespondProactiveCompanionCommand), "respondProactiveCompanion")]
+[JsonDerivedType(typeof(DismissProactiveCompanionCommand), "dismissProactiveCompanion")]
 public abstract record CompanionCommand;
 
 public sealed record ConfigureWorktimeChannelCommand(
@@ -480,6 +531,17 @@ public sealed record RequestAiChatCommand(
     string Text,
     bool ApprovedEstimatedCostOverOneCny = false,
     int MaxOutputTokens = 2048) : CompanionCommand;
+
+public sealed record ConfigureCompanionPersonaCommand(
+    CompanionPersonaSettingsView Settings) : CompanionCommand;
+
+public sealed record AcknowledgeProactiveCompanionCommand(Guid PromptId) : CompanionCommand;
+
+public sealed record RespondProactiveCompanionCommand(
+    Guid PromptId,
+    string ResponseText) : CompanionCommand;
+
+public sealed record DismissProactiveCompanionCommand(Guid PromptId) : CompanionCommand;
 
 public sealed record InterpretNaturalLanguageCommand(
     string Text,

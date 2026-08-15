@@ -26,13 +26,30 @@ public sealed record DesktopPetProjection(
     DesktopPetOverlayState OverlayState,
     string Status,
     string Detail,
-    string? ForegroundProcess = null)
+    string? ForegroundProcess = null,
+    Guid? ProactivePromptId = null)
 {
     public static DesktopPetProjection Disconnected { get; } = new(
         DesktopPetVisualState.Caring,
         DesktopPetOverlayState.None,
         "Core 暂时未连接",
         "监督数据仍以 Core 为准；打开面板可查看连接状态。");
+}
+
+public sealed class CompanionPersonaSettingsChangedEventArgs(
+    CompanionPersonaSettingsView settings) : EventArgs
+{
+    public CompanionPersonaSettingsView Settings { get; } = settings;
+}
+
+public sealed class DesktopPetProfessionalModeChangedEventArgs(bool professionalMode) : EventArgs
+{
+    public bool ProfessionalMode { get; } = professionalMode;
+}
+
+public sealed class ProactivePromptPresentedEventArgs(Guid promptId) : EventArgs
+{
+    public Guid PromptId { get; } = promptId;
 }
 
 public static class DesktopPetProjectionBuilder
@@ -51,6 +68,7 @@ public static class DesktopPetProjectionBuilder
             item.Id == supervision.ActiveComputerCommitmentId);
         var state = supervision.ActiveSupervision;
         var foreground = supervision.LatestActivity?.ForegroundProcess;
+        var persona = companion?.PersonaProjection ?? CompanionPersonaView.Default;
         var overlay = state?.ActiveRest is not null
             ? DesktopPetOverlayState.Resting
             : companion?.Ai.IsRequestInProgress == true
@@ -98,6 +116,18 @@ public static class DesktopPetProjectionBuilder
                 active.Phase == CommitmentPhase.PreparationBuffer ? "准备缓冲" : "专注监督中",
                 $"{title} · {Activity(state.Classification)}",
                 foreground);
+        }
+
+        if (persona.CurrentPrompt is { } prompt &&
+            (prompt.ExpiresAt is null || prompt.ExpiresAt > now))
+        {
+            return new(
+                DesktopPetVisualState.Caring,
+                overlay,
+                prompt.Text,
+                "点击 Jarvis 可以回应；不想回应时忽略即可，不会追问。",
+                foreground,
+                prompt.PromptId);
         }
 
         var recentCompletion = companion?.CommitmentReviews

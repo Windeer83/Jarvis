@@ -362,6 +362,67 @@
                                 <TextBlock x:Name="AiChatResultText" Margin="0,8,0,0" TextWrapping="Wrap" />
                             </StackPanel>
                         </TabItem>
+                        <TabItem Header="陪伴人格（T23）">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="陪伴设置只改变称呼、语气和主动交流频率，不改变事实、监督规则或正式记录。"
+                                           Foreground="#4A5568" TextWrapping="Wrap" />
+                                <WrapPanel Margin="0,10,0,8">
+                                    <CheckBox x:Name="PersonaProfessionalModeBox" Content="专业模式"
+                                              VerticalAlignment="Center" Margin="0,0,16,0" />
+                                    <CheckBox x:Name="PersonaProactiveEnabledBox" Content="允许非工作时段低频主动问候"
+                                              VerticalAlignment="Center" IsChecked="True" />
+                                </WrapPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="130" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Text="允许的称呼（可空）" VerticalAlignment="Center" />
+                                    <TextBox x:Name="PersonaPreferredAddressBox" Grid.Row="0" Grid.Column="1"
+                                             Padding="6" Margin="8,3" />
+                                    <TextBlock Grid.Row="1" Text="不喜欢的称呼" VerticalAlignment="Center" />
+                                    <TextBox x:Name="PersonaDisallowedAddressesBox" Grid.Row="1" Grid.Column="1"
+                                             Padding="6" Margin="8,3" ToolTip="逗号或换行分隔" />
+                                    <TextBlock Grid.Row="2" Text="不喜欢的语气" VerticalAlignment="Center" />
+                                    <TextBox x:Name="PersonaDislikedToneBox" Grid.Row="2" Grid.Column="1"
+                                             Padding="6" Margin="8,3" TextWrapping="Wrap" />
+                                    <TextBlock Grid.Row="3" Text="互动边界" VerticalAlignment="Center" />
+                                    <TextBox x:Name="PersonaBoundaryBox" Grid.Row="3" Grid.Column="1"
+                                             Padding="6" Margin="8,3" TextWrapping="Wrap" AcceptsReturn="True"
+                                             MinHeight="48" />
+                                </Grid>
+                                <Button Content="保存陪伴边界" Width="130" HorizontalAlignment="Left"
+                                        Padding="10,5" Click="SaveCompanionPersonaButton_Click" />
+                                <TextBlock Text="没有亲密度、关系阶段、心情、投喂、金币或照顾任务；忽略一次即结束，不追问。"
+                                           Foreground="#7A4E00" TextWrapping="Wrap" Margin="0,8,0,12" />
+                                <Separator />
+                                <TextBlock Text="当前主动问候" FontWeight="SemiBold" Margin="0,10,0,4" />
+                                <Border x:Name="ProactiveCompanionPanel" Background="#F2F7FF"
+                                        BorderBrush="#8BB8F1" BorderThickness="1" CornerRadius="8"
+                                        Padding="10" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock x:Name="ProactiveCompanionPromptText" TextWrapping="Wrap" />
+                                        <TextBox x:Name="ProactiveCompanionResponseBox" Margin="0,8,0,6"
+                                                 Padding="6" TextWrapping="Wrap" AcceptsReturn="True"
+                                                 ToolTip="回应后本次问候立即结束；不会追问。" />
+                                        <WrapPanel>
+                                            <Button Content="回应并结束" Padding="10,5" Margin="0,0,8,0"
+                                                    Click="RespondProactiveCompanionButton_Click" />
+                                            <Button Content="忽略并结束" Padding="10,5"
+                                                    Click="DismissProactiveCompanionButton_Click" />
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+                                <TextBlock x:Name="CompanionPersonaStatusText" Margin="0,8,0,0"
+                                           Foreground="#4A5568" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </TabItem>
                         <TabItem Header="飞书手机闭环">
                             <StackPanel Margin="10">
                                 <WrapPanel>

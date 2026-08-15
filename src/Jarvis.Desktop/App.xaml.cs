@@ -45,9 +45,20 @@ public partial class App : Application
         MainWindow = window;
         _desktopPet = desktopPet;
         window.DesktopPetProjectionChanged += (_, projection) => desktopPet.ApplyProjection(projection);
+        window.CompanionPersonaSettingsChanged += (_, args) =>
+            desktopPet.SetProfessionalMode(args.Settings.ProfessionalMode);
         desktopPet.RestoreRequested += (_, _) => window.OpenConversation();
         desktopPet.CreateCommitmentRequested += (_, _) => window.OpenCommitmentCreation();
         desktopPet.StartRestRequested += async (_, _) => await window.StartDefaultTimedRestAsync();
+        desktopPet.ProfessionalModeChanged += async (_, args) =>
+            await window.ConfigureProfessionalModeAsync(args.ProfessionalMode);
+        desktopPet.ProactivePromptPresented += async (_, args) =>
+        {
+            if (!await window.AcknowledgeProactivePromptAsync(args.PromptId))
+            {
+                desktopPet.RetryProactivePromptPresentation(args.PromptId);
+            }
+        };
         desktopPet.ExitRequested += async (_, _) =>
         {
             if (await window.RequestProductExitAsync())

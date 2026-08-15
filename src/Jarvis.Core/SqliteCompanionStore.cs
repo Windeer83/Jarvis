@@ -29,6 +29,16 @@ internal sealed record StoredCandidateState(Guid CandidateId, string State);
 
 internal sealed record StoredWorktimeCandidateBinding(Guid CandidateId, string Action);
 
+internal sealed record StoredCompanionPersonaState(
+    CompanionPersonaSettingsView Settings,
+    ProactiveCompanionPromptView? CurrentPrompt,
+    int TotalResponses,
+    int TotalIgnores,
+    int ConsecutiveIgnores,
+    int TodayPromptCount,
+    DateOnly LocalDate,
+    DateTimeOffset? LastPromptAt);
+
 internal sealed class SqliteCompanionStore
 {
     private readonly string _connectionString;
@@ -94,6 +104,68 @@ internal sealed class SqliteCompanionStore
         AiModelPreference preference,
         CancellationToken cancellationToken) =>
         WriteSettingAsync("ai-model-preference", preference.ToString(), cancellationToken);
+
+    public async Task<StoredCompanionPersonaState> ReadCompanionPersonaStateAsync(
+        DateOnly localDate,
+        CancellationToken cancellationToken)
+    {
+        var value = await ReadSettingAsync("companion-persona", cancellationToken).ConfigureAwait(false);
+        var state = value is null
+            ? new StoredCompanionPersonaState(
+                CompanionPersonaSettingsView.Default, null, 0, 0, 0, 0, localDate, null)
+            : JsonSerializer.Deserialize<StoredCompanionPersonaState>(value, CoreProtocol.Json) ??
+              new StoredCompanionPersonaState(
+                  CompanionPersonaSettingsView.Default, null, 0, 0, 0, 0, localDate, null);
+        return state.LocalDate == localDate
+            ? state
+            : state with { LocalDate = localDate, TodayPromptCount = 0 };
+    }
+
+    public Task SaveCompanionPersonaStateAsync(
+        StoredCompanionPersonaState state,
+        CancellationToken cancellationToken) =>
+        WriteSettingAsync(
+            "companion-persona",
+            JsonSerializer.Serialize(state, CoreProtocol.Json),
+            cancellationToken);
+
+    public async Task CompleteProactiveResponseAsync(
+        StoredCompanionPersonaState state,
+        ChatMessageView prompt,
+        ChatMessageView response,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using (var setting = connection.CreateCommand())
+        {
+            setting.Transaction = transaction;
+            setting.CommandText = """
+                INSERT INTO companion_settings(key,value) VALUES('companion-persona',$value)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+                """;
+            Add(setting, "$value", JsonSerializer.Serialize(state, CoreProtocol.Json));
+            await setting.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (var message in new[] { prompt, response })
+        {
+            await using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT INTO companion_chat_messages(message_id,at_utc,role,text)
+                VALUES($id,$at,$role,$text);
+                """;
+            Add(insert, "$id", message.MessageId.ToString("D"));
+            Add(insert, "$at", Format(message.At));
+            Add(insert, "$role", message.Role);
+            Add(insert, "$text", message.Text);
+            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     public async Task<StoredWorktimeCandidateBinding?> ReadWorktimeCandidateBindingAsync(
         string eventId,
@@ -1091,7 +1163,7 @@ internal sealed class SqliteCompanionStore
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT message_id,at_utc,role,text FROM companion_chat_messages ORDER BY at_utc DESC LIMIT 30;";
+        command.CommandText = "SELECT message_id,at_utc,role,text FROM companion_chat_messages ORDER BY at_utc DESC,rowid DESC LIMIT 30;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<ChatMessageView>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

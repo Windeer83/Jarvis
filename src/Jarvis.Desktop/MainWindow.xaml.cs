@@ -34,6 +34,7 @@ public partial class MainWindow : Window
     private bool _applicationExit;
 
     public event EventHandler<DesktopPetProjection>? DesktopPetProjectionChanged;
+    public event EventHandler<CompanionPersonaSettingsChangedEventArgs>? CompanionPersonaSettingsChanged;
 
     public MainWindow()
     {
@@ -1422,6 +1423,64 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void SaveCompanionPersonaButton_Click(object sender, RoutedEventArgs eventArgs) =>
+        await SendCompanionAsync(new ConfigureCompanionPersonaCommand(ReadPersonaSettingsFromForm()));
+
+    private async void RespondProactiveCompanionButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var prompt = _companionSnapshot?.PersonaProjection.CurrentPrompt;
+        if (prompt is null)
+        {
+            SetOperationStatus("当前没有等待回应的主动问候。", isError: true);
+            return;
+        }
+
+        var outcome = await SendCompanionAsync(new RespondProactiveCompanionCommand(
+            prompt.PromptId,
+            ProactiveCompanionResponseBox.Text));
+        if (outcome?.Success == true) ProactiveCompanionResponseBox.Clear();
+    }
+
+    private async void DismissProactiveCompanionButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var prompt = _companionSnapshot?.PersonaProjection.CurrentPrompt;
+        if (prompt is null)
+        {
+            SetOperationStatus("当前主动问候已经结束。", isError: false);
+            return;
+        }
+
+        await SendCompanionAsync(new DismissProactiveCompanionCommand(prompt.PromptId));
+        ProactiveCompanionResponseBox.Clear();
+    }
+
+    public async Task ConfigureProfessionalModeAsync(bool professionalMode)
+    {
+        var current = _companionSnapshot?.PersonaProjection.Settings ?? CompanionPersonaSettingsView.Default;
+        await SendCompanionAsync(new ConfigureCompanionPersonaCommand(
+            current with { ProfessionalMode = professionalMode }));
+    }
+
+    public async Task<bool> AcknowledgeProactivePromptAsync(Guid promptId)
+    {
+        var outcome = await SendCompanionAsync(new AcknowledgeProactiveCompanionCommand(promptId));
+        return outcome?.Success == true;
+    }
+
+    private CompanionPersonaSettingsView ReadPersonaSettingsFromForm() => new(
+        PersonaProfessionalModeBox.IsChecked == true,
+        PersonaProactiveEnabledBox.IsChecked == true,
+        string.IsNullOrWhiteSpace(PersonaPreferredAddressBox.Text)
+            ? null
+            : PersonaPreferredAddressBox.Text.Trim(),
+        PersonaDisallowedAddressesBox.Text
+            .Split([',', '，', ';', '；', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => value.Trim())
+            .Where(value => value.Length > 0)
+            .ToArray(),
+        PersonaDislikedToneBox.Text.Trim(),
+        PersonaBoundaryBox.Text.Trim());
+
     private async void ConfigureWorktimeButton_Click(object sender, RoutedEventArgs eventArgs) =>
         await SendCompanionAsync(new ConfigureWorktimeChannelCommand(
             WorktimeEnabledBox.IsChecked == true,
@@ -1757,6 +1816,33 @@ public partial class MainWindow : Window
         RefreshCommitmentGridRows();
         _naturalLanguageCandidate = snapshot.PendingCandidate;
 
+        var persona = snapshot.PersonaProjection;
+        if (!PersonaProfessionalModeBox.IsKeyboardFocusWithin)
+            PersonaProfessionalModeBox.IsChecked = persona.Settings.ProfessionalMode;
+        if (!PersonaProactiveEnabledBox.IsKeyboardFocusWithin)
+            PersonaProactiveEnabledBox.IsChecked = persona.Settings.ProactiveEnabled;
+        if (!PersonaPreferredAddressBox.IsKeyboardFocusWithin)
+            PersonaPreferredAddressBox.Text = persona.Settings.PreferredAddress ?? "";
+        if (!PersonaDisallowedAddressesBox.IsKeyboardFocusWithin)
+            PersonaDisallowedAddressesBox.Text = string.Join(", ", persona.Settings.DisallowedAddresses);
+        if (!PersonaDislikedToneBox.IsKeyboardFocusWithin)
+            PersonaDislikedToneBox.Text = persona.Settings.DislikedTone;
+        if (!PersonaBoundaryBox.IsKeyboardFocusWithin)
+            PersonaBoundaryBox.Text = persona.Settings.InteractionBoundary;
+        ProactiveCompanionPanel.Visibility = persona.CurrentPrompt is null
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        ProactiveCompanionPromptText.Text = persona.CurrentPrompt?.Text ?? "";
+        CompanionPersonaStatusText.Text =
+            $"今天主动问候 {persona.TodayPromptCount} 次 · 已回应 {persona.TotalResponses} · " +
+            $"已忽略 {persona.TotalIgnores} · 连续忽略 {persona.ConsecutiveIgnores}\n" +
+            (persona.Settings.ProfessionalMode
+                ? "当前为专业表达；不会使用亲密称呼。"
+                : "当前为有边界的温和陪伴；不产生关系等级或照顾义务。");
+        CompanionPersonaSettingsChanged?.Invoke(
+            this,
+            new CompanionPersonaSettingsChangedEventArgs(persona.Settings));
+
         var ai = snapshot.Ai;
         AiModelPreferenceBox.SelectedItem = ai.ModelPreference;
         AiStatusText.Text = ai.Enabled
@@ -1897,6 +1983,8 @@ public partial class MainWindow : Window
         AiReviewDraftBox.Clear();
         AiTrialEvidenceText.Text = "Core 未连接";
         AiReviewHistoryText.Text = "Core 未连接";
+        ProactiveCompanionPanel.Visibility = Visibility.Collapsed;
+        CompanionPersonaStatusText.Text = "Core 未连接";
         PublishDesktopPetProjection();
     }
 
@@ -2144,9 +2232,18 @@ public partial class MainWindow : Window
     public void OpenConversation()
     {
         RestoreConfigurationWindow();
-        CompanionTabs.SelectedIndex = 0;
-        NaturalLanguageBox.BringIntoView();
-        NaturalLanguageBox.Focus();
+        if (_companionSnapshot?.PersonaProjection.CurrentPrompt is not null)
+        {
+            CompanionTabs.SelectedIndex = 1;
+            ProactiveCompanionResponseBox.BringIntoView();
+            ProactiveCompanionResponseBox.Focus();
+        }
+        else
+        {
+            CompanionTabs.SelectedIndex = 0;
+            AiChatBox.BringIntoView();
+            AiChatBox.Focus();
+        }
     }
 
     public void OpenCommitmentCreation()

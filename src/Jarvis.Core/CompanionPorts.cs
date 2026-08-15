@@ -86,7 +86,8 @@ internal sealed record AiProviderRequest(
     int MaxOutputTokens,
     DateTimeOffset Now,
     SupervisionSnapshot? Supervision = null,
-    AiReviewFacts? ReviewFacts = null);
+    AiReviewFacts? ReviewFacts = null,
+    string? PersonaInstructions = null);
 
 internal sealed record AiReviewFacts(
     AiReviewKind Kind,

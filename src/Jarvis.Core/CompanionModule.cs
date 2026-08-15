@@ -122,6 +122,14 @@ internal sealed class CompanionModule : IAsyncDisposable
                 DeleteAiCredentialCommand => await DeleteAiCredentialAsync(cancellationToken),
                 SetAiMonthlyHardCapCommand value => await SetAiMonthlyHardCapAsync(value, cancellationToken),
                 SetAiModelPreferenceCommand value => await SetAiModelPreferenceAsync(value, cancellationToken),
+                ConfigureCompanionPersonaCommand value =>
+                    await ConfigureCompanionPersonaAsync(value, cancellationToken),
+                AcknowledgeProactiveCompanionCommand value =>
+                    await AcknowledgeProactiveCompanionAsync(value, cancellationToken),
+                RespondProactiveCompanionCommand value =>
+                    await RespondProactiveCompanionAsync(value, cancellationToken),
+                DismissProactiveCompanionCommand value =>
+                    await DismissProactiveCompanionAsync(value, cancellationToken),
                 RequestAiChatCommand value => await RequestAiChatAsync(value, cancellationToken),
                 InterpretNaturalLanguageCommand value => await InterpretNaturalLanguageAsync(value, cancellationToken),
                 ConfirmNaturalLanguageCandidateCommand value =>
@@ -185,6 +193,7 @@ internal sealed class CompanionModule : IAsyncDisposable
             await AdvanceMobileEscalationAsync(supervision, cancellationToken).ConfigureAwait(false);
             await AdvanceDailyReviewAsync(supervision, cancellationToken).ConfigureAwait(false);
             await AdvanceCycleReviewAsync(cancellationToken).ConfigureAwait(false);
+            await AdvanceProactiveCompanionAsync(supervision, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -202,6 +211,9 @@ internal sealed class CompanionModule : IAsyncDisposable
         var hardCap = await _store.ReadAiMonthlyHardCapAsync(cancellationToken).ConfigureAwait(false);
         var modelPreference = await _store.ReadAiModelPreferenceAsync(cancellationToken).ConfigureAwait(false);
         var dailyReview = await _store.ReadDailyReviewAsync(cancellationToken).ConfigureAwait(false);
+        var localDate = DateOnly.FromDateTime(_clock.Now.ToLocalTime().DateTime);
+        var personaState = await _store.ReadCompanionPersonaStateAsync(localDate, cancellationToken)
+            .ConfigureAwait(false);
         var factsDate = dailyReview.ReviewDate ?? DateOnly.FromDateTime(_clock.Now.ToLocalTime().DateTime);
         dailyReview = dailyReview with
         {
@@ -227,7 +239,8 @@ internal sealed class CompanionModule : IAsyncDisposable
             await _store.ReadPendingCandidateAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadPendingAiReviewDraftAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadConfirmedAiReviewDraftsAsync(cancellationToken).ConfigureAwait(false),
-            await _store.ReadAiTrialEvidenceAsync(_clock.Now, cancellationToken).ConfigureAwait(false));
+            await _store.ReadAiTrialEvidenceAsync(_clock.Now, cancellationToken).ConfigureAwait(false),
+            Persona: ToPersonaView(personaState));
     }
 
     public async ValueTask DisposeAsync()
@@ -1147,15 +1160,151 @@ internal sealed class CompanionModule : IAsyncDisposable
         return Ok($"所有云端 AI 请求已切换为 {label}。", await SnapshotAsync(cancellationToken));
     }
 
+    private async Task<CompanionOutcome> ConfigureCompanionPersonaAsync(
+        ConfigureCompanionPersonaCommand command,
+        CancellationToken cancellationToken)
+    {
+        var normalized = NormalizePersonaSettings(command.Settings);
+        if (normalized is null)
+            return Fail("companion_persona_invalid", "陪伴设置过长或包含无效内容，请缩短后重试。");
+        var localDate = DateOnly.FromDateTime(_clock.Now.ToLocalTime().DateTime);
+        var state = await _store.ReadCompanionPersonaStateAsync(localDate, cancellationToken)
+            .ConfigureAwait(false);
+        await _store.SaveCompanionPersonaStateAsync(
+            state with { Settings = normalized }, cancellationToken).ConfigureAwait(false);
+        return Ok(
+            normalized.ProfessionalMode
+                ? "已切换为专业表达；事实、监督规则和正式记录没有变化。"
+                : "陪伴表达边界已保存；事实、监督规则和正式记录没有变化。",
+            await SnapshotAsync(cancellationToken));
+    }
+
+    private async Task<CompanionOutcome> RespondProactiveCompanionAsync(
+        RespondProactiveCompanionCommand command,
+        CancellationToken cancellationToken)
+    {
+        var response = command.ResponseText.Trim();
+        if (response.Length is 0 or > 1000)
+            return Fail("companion_response_invalid", "回应需要 1–1000 个字符。");
+        var localDate = DateOnly.FromDateTime(_clock.Now.ToLocalTime().DateTime);
+        var state = await _store.ReadCompanionPersonaStateAsync(localDate, cancellationToken)
+            .ConfigureAwait(false);
+        if (state.CurrentPrompt is not { } prompt || prompt.PromptId != command.PromptId)
+            return Fail("companion_prompt_stale", "这次主动问候已经结束，不会继续追问。");
+        if (prompt.ExpiresAt is { } expiresAt && _clock.Now >= expiresAt)
+        {
+            await _store.SaveCompanionPersonaStateAsync(
+                RegisterIgnore(state), cancellationToken).ConfigureAwait(false);
+            return Fail("companion_prompt_expired", "这次主动问候已经自然结束，不会继续追问。");
+        }
+
+        var presented = MarkPromptPresented(state, _clock.Now);
+        var completed = presented with
+        {
+            CurrentPrompt = null,
+            TotalResponses = presented.TotalResponses + 1,
+            ConsecutiveIgnores = 0
+        };
+        await _store.CompleteProactiveResponseAsync(
+            completed,
+            new ChatMessageView(Guid.NewGuid(), prompt.CreatedAt, "assistant", prompt.Text),
+            new ChatMessageView(Guid.NewGuid(), _clock.Now, "user", response),
+            cancellationToken).ConfigureAwait(false);
+        return Ok("已收到；这次主动问候到这里结束，不会继续追问。", await SnapshotAsync(cancellationToken));
+    }
+
+    private async Task<CompanionOutcome> AcknowledgeProactiveCompanionAsync(
+        AcknowledgeProactiveCompanionCommand command,
+        CancellationToken cancellationToken)
+    {
+        var localDate = DateOnly.FromDateTime(_clock.Now.ToLocalTime().DateTime);
+        var state = await _store.ReadCompanionPersonaStateAsync(localDate, cancellationToken)
+            .ConfigureAwait(false);
+        if (state.CurrentPrompt is not { } prompt || prompt.PromptId != command.PromptId)
+            return Fail("companion_prompt_stale", "这次主动问候已经结束。");
+        if (prompt.PresentedAt is not null)
+            return Ok("主动问候已经显示。", await SnapshotAsync(cancellationToken));
+
+        await _store.SaveCompanionPersonaStateAsync(
+            MarkPromptPresented(state, _clock.Now), cancellationToken).ConfigureAwait(false);
+        return Ok("主动问候已经显示；只从真正显示时开始计算。", await SnapshotAsync(cancellationToken));
+    }
+
+    private async Task<CompanionOutcome> DismissProactiveCompanionAsync(
+        DismissProactiveCompanionCommand command,
+        CancellationToken cancellationToken)
+    {
+        var localDate = DateOnly.FromDateTime(_clock.Now.ToLocalTime().DateTime);
+        var state = await _store.ReadCompanionPersonaStateAsync(localDate, cancellationToken)
+            .ConfigureAwait(false);
+        if (state.CurrentPrompt is not { } prompt || prompt.PromptId != command.PromptId)
+            return Ok("这次主动问候已经结束。", await SnapshotAsync(cancellationToken));
+        await _store.SaveCompanionPersonaStateAsync(
+                RegisterIgnore(MarkPromptPresented(state, _clock.Now)), cancellationToken)
+            .ConfigureAwait(false);
+        return Ok("已结束这次主动问候；Jarvis 不会追问或表现失落。", await SnapshotAsync(cancellationToken));
+    }
+
+    private async Task AdvanceProactiveCompanionAsync(
+        SupervisionSnapshot supervision,
+        CancellationToken cancellationToken)
+    {
+        var now = _clock.Now;
+        var local = now.ToLocalTime();
+        var localDate = DateOnly.FromDateTime(local.DateTime);
+        var state = await _store.ReadCompanionPersonaStateAsync(localDate, cancellationToken)
+            .ConfigureAwait(false);
+        if (state.CurrentPrompt is { } current)
+        {
+            if (current.ExpiresAt is null || now < current.ExpiresAt) return;
+            state = RegisterIgnore(state);
+            await _store.SaveCompanionPersonaStateAsync(state, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!state.Settings.ProactiveEnabled || HasActiveWork(supervision) ||
+            supervision.LatestActivity?.Availability == ActivityAvailability.Unobservable ||
+            local.Hour is < 10 or >= 22)
+        {
+            return;
+        }
+
+        var maxToday = state.TotalResponses >= 2 && state.TotalResponses > state.TotalIgnores ? 2 : 1;
+        if (state.TodayPromptCount >= maxToday) return;
+        var targetHour = state.TodayPromptCount == 0 ? 12 : 19;
+        if (local.Hour < targetHour) return;
+        var cooldownDays = state.ConsecutiveIgnores >= 4 ? 4 : state.ConsecutiveIgnores >= 2 ? 2 : 0;
+        if (state.LastPromptAt is { } last &&
+            (cooldownDays > 0 && localDate.DayNumber - DateOnly.FromDateTime(last.ToLocalTime().DateTime).DayNumber < cooldownDays ||
+             now - last < TimeSpan.FromHours(6)))
+        {
+            return;
+        }
+
+        var prompt = new ProactiveCompanionPromptView(
+            Guid.NewGuid(),
+            ProactiveText(state.Settings, localDate, state.TodayPromptCount),
+            now,
+            null);
+        await _store.SaveCompanionPersonaStateAsync(
+            state with { CurrentPrompt = prompt },
+            cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task<CompanionOutcome> RequestAiChatAsync(
         RequestAiChatCommand command,
         CancellationToken cancellationToken)
     {
         var text = command.Text.Trim();
         if (text.Length == 0) return Fail("ai_text_required", "聊天内容不能为空。");
+        var localDate = DateOnly.FromDateTime(_clock.Now.ToLocalTime().DateTime);
+        var persona = await _store.ReadCompanionPersonaStateAsync(localDate, cancellationToken)
+            .ConfigureAwait(false);
+        var supervision = await _supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
         var result = await CallAiAsync(
             AiRequestPurpose.BasicChat, text, command.MaxOutputTokens,
-            command.ApprovedEstimatedCostOverOneCny, cancellationToken).ConfigureAwait(false);
+            command.ApprovedEstimatedCostOverOneCny, cancellationToken,
+            personaInstructions: BuildPersonaInstructions(persona.Settings, HasActiveWork(supervision)))
+            .ConfigureAwait(false);
         if (!result.Outcome.Success) return result.Outcome;
         await _store.InsertChatAsync(new ChatMessageView(Guid.NewGuid(), _clock.Now, "user", text), cancellationToken)
             .ConfigureAwait(false);
@@ -1685,7 +1834,8 @@ internal sealed class CompanionModule : IAsyncDisposable
         bool approvedOverOneCny,
         CancellationToken cancellationToken,
         Guid? stableRequestId = null,
-        AiReviewFacts? reviewFacts = null)
+        AiReviewFacts? reviewFacts = null,
+        string? personaInstructions = null)
     {
         var requestId = stableRequestId ?? Guid.NewGuid();
         if (stableRequestId is not null)
@@ -1712,7 +1862,8 @@ internal sealed class CompanionModule : IAsyncDisposable
             purpose == AiRequestPurpose.NaturalLanguageOperation
                 ? await _supervision.GetSnapshotAsync(cancellationToken).ConfigureAwait(false)
                 : null,
-            reviewFacts);
+            reviewFacts,
+            personaInstructions);
         var estimate = _aiProvider.EstimateCostCny(aiRequest);
         if (estimate > 1m && !approvedOverOneCny)
             return (Fail("ai_cost_confirmation_required", $"本次预计约 {estimate:F2} 元，需要明确确认后再调用。"), null);
@@ -1780,6 +1931,128 @@ internal sealed class CompanionModule : IAsyncDisposable
         _aiError = null;
         return (new CompanionOutcome(true), providerResult);
     }
+
+    private static CompanionPersonaSettingsView? NormalizePersonaSettings(
+        CompanionPersonaSettingsView? settings)
+    {
+        if (settings is null) return null;
+        var preferred = settings.PreferredAddress?.Trim();
+        var dislikedTone = settings.DislikedTone.Trim();
+        var boundary = settings.InteractionBoundary.Trim();
+        var disallowed = (settings.DisallowedAddresses ?? [])
+            .Select(value => value.Trim())
+            .Where(value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (preferred?.Length > 30 || dislikedTone.Length > 300 || boundary.Length > 500 ||
+            disallowed.Length > 20 || disallowed.Any(value => value.Length > 30))
+        {
+            return null;
+        }
+
+        if (preferred is not null && disallowed.Contains(preferred, StringComparer.OrdinalIgnoreCase))
+            preferred = null;
+        return settings with
+        {
+            PreferredAddress = string.IsNullOrWhiteSpace(preferred) ? null : preferred,
+            DisallowedAddresses = disallowed,
+            DislikedTone = dislikedTone,
+            InteractionBoundary = boundary
+        };
+    }
+
+    private static StoredCompanionPersonaState RegisterIgnore(StoredCompanionPersonaState state) => state with
+    {
+        CurrentPrompt = null,
+        TotalIgnores = state.TotalIgnores + 1,
+        ConsecutiveIgnores = state.ConsecutiveIgnores + 1
+    };
+
+    private static StoredCompanionPersonaState MarkPromptPresented(
+        StoredCompanionPersonaState state,
+        DateTimeOffset now)
+    {
+        if (state.CurrentPrompt is not { } prompt || prompt.PresentedAt is not null)
+        {
+            return state;
+        }
+
+        return state with
+        {
+            CurrentPrompt = prompt with
+            {
+                PresentedAt = now,
+                ExpiresAt = now.AddHours(2)
+            },
+            TodayPromptCount = state.TodayPromptCount + 1,
+            LastPromptAt = now
+        };
+    }
+
+    private static bool HasActiveWork(SupervisionSnapshot snapshot) => snapshot.Commitments.Any(item =>
+        item.Phase is CommitmentPhase.PreparationBuffer or
+            CommitmentPhase.Supervising or
+            CommitmentPhase.ActiveUnsupervised);
+
+    private static string ProactiveText(
+        CompanionPersonaSettingsView settings,
+        DateOnly localDate,
+        int todayPromptCount)
+    {
+        if (settings.ProfessionalMode)
+        {
+            return todayPromptCount == 0
+                ? "现在是非工作时段。需要我帮你整理下一项安排吗？"
+                : "如果你愿意，我们可以用几句话回顾一下今天的进展。";
+        }
+
+        var address = string.IsNullOrWhiteSpace(settings.PreferredAddress)
+            ? "你"
+            : settings.PreferredAddress!.Trim();
+        var variants = new[]
+        {
+            $"{address}，今天到现在还顺利吗？如果愿意，可以告诉我一件想让我帮忙的事。",
+            $"{address}，现在没有进行中的工作承诺。要不要一起看看下一项安排？",
+            $"{address}，辛苦了。想聊两句，或者安静休息一会儿，都可以。"
+        };
+        return variants[Math.Abs(localDate.DayNumber + todayPromptCount) % variants.Length];
+    }
+
+    private static string BuildPersonaInstructions(
+        CompanionPersonaSettingsView settings,
+        bool supervising)
+    {
+        var style = settings.ProfessionalMode
+            ? "使用克制、专业、简洁的中文，不使用亲密称呼。"
+            : supervising
+                ? "当前存在工作承诺，表达简短坚定；可以支持用户，但不要延展闲聊。"
+                : "使用温柔、自然的伙伴型教练语气；亲密表达必须轻量且无负担。";
+        var preferred = !settings.ProfessionalMode && !string.IsNullOrWhiteSpace(settings.PreferredAddress)
+            ? $"用户允许的称呼是“{settings.PreferredAddress}”；不必每句都使用。"
+            : "不主动使用特殊称呼。";
+        var disallowed = settings.DisallowedAddresses.Count == 0
+            ? ""
+            : $"绝不使用这些称呼：{string.Join("、", settings.DisallowedAddresses)}。";
+        return $"""
+            {style}
+            {preferred}{disallowed}
+            用户不喜欢的语气：{settings.DislikedTone}
+            用户互动边界：{settings.InteractionBoundary}
+            永远不使用生气、吃醋、冷落、羞辱、愧疚、失落追问或感情承诺操纵用户。
+            不制造亲密度、关系阶段、心情、饥饿、投喂、金币、商城、陪伴任务或照顾义务。
+            用户没有回应时立即结束，不暗示用户亏欠 Jarvis。
+            这些要求只改变表达，不得改变事实、监督规则或声称已经执行任何操作。
+            """;
+    }
+
+    private static CompanionPersonaView ToPersonaView(StoredCompanionPersonaState state) => new(
+        state.Settings,
+        state.CurrentPrompt,
+        state.TotalResponses,
+        state.TotalIgnores,
+        state.ConsecutiveIgnores,
+        state.TodayPromptCount,
+        state.LocalDate);
 
     private async ValueTask<string?> ReadAiCredentialAsync(CancellationToken cancellationToken)
     {
