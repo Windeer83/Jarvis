@@ -386,7 +386,8 @@ public sealed record CompanionSnapshot(
     AiReviewDraftView? PendingAiReviewDraft = null,
     IReadOnlyList<AiReviewDraftView>? AiReviewDraftHistory = null,
     AiTrialEvidenceView? TrialEvidence = null,
-    CompanionPersonaView? Persona = null)
+    CompanionPersonaView? Persona = null,
+    DataGovernanceStatusView? DataGovernance = null)
 {
     [JsonIgnore]
     public IReadOnlyList<AiReviewDraftView> ConfirmedAiReviewDrafts => AiReviewDraftHistory ?? [];
@@ -396,6 +397,10 @@ public sealed record CompanionSnapshot(
 
     [JsonIgnore]
     public CompanionPersonaView PersonaProjection => Persona ?? CompanionPersonaView.Default;
+
+    [JsonIgnore]
+    public DataGovernanceStatusView DataGovernanceProjection =>
+        DataGovernance ?? DataGovernanceStatusView.Default;
 
     public static CompanionSnapshot Empty { get; } = new(
         new(false, false, false, null, null, null),
@@ -446,6 +451,11 @@ public sealed record CompanionSnapshot(
 [JsonDerivedType(typeof(AcknowledgeProactiveCompanionCommand), "acknowledgeProactiveCompanion")]
 [JsonDerivedType(typeof(RespondProactiveCompanionCommand), "respondProactiveCompanion")]
 [JsonDerivedType(typeof(DismissProactiveCompanionCommand), "dismissProactiveCompanion")]
+[JsonDerivedType(typeof(SetDetailedTimelineRetentionCommand), "setDetailedTimelineRetention")]
+[JsonDerivedType(typeof(QueryDataRangeCommand), "queryDataRange")]
+[JsonDerivedType(typeof(ExportDataRangeCommand), "exportDataRange")]
+[JsonDerivedType(typeof(PreparePermanentDataDeletionCommand), "preparePermanentDataDeletion")]
+[JsonDerivedType(typeof(ConfirmPermanentDataDeletionCommand), "confirmPermanentDataDeletion")]
 public abstract record CompanionCommand;
 
 public sealed record ConfigureWorktimeChannelCommand(
@@ -586,4 +596,6 @@ public sealed record CompanionOutcome(
     CompanionSnapshot? Snapshot = null,
     NaturalLanguageOperationCandidate? Candidate = null,
     string? AssistantText = null,
-    IReadOnlyList<string>? MissingInformation = null);
+    IReadOnlyList<string>? MissingInformation = null,
+    DataRangeView? DataRange = null,
+    DataDeletionCard? DataDeletion = null);

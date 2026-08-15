@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Jarvis.Contracts;
+using Microsoft.Win32;
 
 namespace Jarvis.Desktop;
 
@@ -27,6 +28,7 @@ public partial class MainWindow : Window
     private NaturalLanguageOperationCandidate? _naturalLanguageCandidate;
     private AiReviewDraftView? _activeAiReviewDraft;
     private Guid? _displayedAiReviewDraftId;
+    private DataDeletionCard? _dataDeletionCandidate;
     private CommitmentView? _revisionSource;
     private readonly LocalReminderSoundGate _soundGate = new();
     private bool _refreshing;
@@ -60,6 +62,8 @@ public partial class MainWindow : Window
         AiModelPreferenceBox.SelectedItem = AiModelPreference.Flash;
         VoiceTargetBox.ItemsSource = VoiceInputTargetOption.All;
         VoiceTargetBox.SelectedIndex = 0;
+        DataDeletionScopeBox.ItemsSource = Enum.GetValues<DataDeletionScope>();
+        DataDeletionScopeBox.SelectedItem = DataDeletionScope.DetailedTimelineOnly;
         _voiceSettings = _voiceSettingsStore.Load();
         VoiceGlobalMuteBox.IsChecked = _voiceSettings.GlobalMute;
         VoiceHeadphonesOnlyBox.IsChecked = _voiceSettings.HeadphonesOnly;
@@ -81,6 +85,8 @@ public partial class MainWindow : Window
         RangeEndPicker.SelectedDate = suggestedStart.Date.AddDays(6);
         RecurrenceValuesBox.Text = "1,2,3,4,5";
         AdjustmentReasonPanel.Visibility = Visibility.Collapsed;
+        DataRangeStartPicker.SelectedDate = DateTime.Today.AddDays(-7);
+        DataRangeEndPicker.SelectedDate = DateTime.Today;
 
         _refreshTimer.Tick += async (_, _) => await RefreshSnapshotAsync();
         _reminderOverlay.RestoreRequested += (_, _) => RestoreConfigurationWindow();
@@ -1510,12 +1516,12 @@ public partial class MainWindow : Window
                     break;
                 case VoiceInputTarget.CommitmentReview:
                     CommitmentReviewTextBox.Text = text;
-                    CompanionTabs.SelectedIndex = 4;
+                    CompanionTabs.SelectedIndex = 5;
                     VoiceStatusText.Text = "转写已填入承诺回顾；请核对完成判断后点击“提交回顾”。";
                     break;
                 case VoiceInputTarget.DailyReview:
                     DailyReviewAnswerBox.Text = text;
-                    CompanionTabs.SelectedIndex = 4;
+                    CompanionTabs.SelectedIndex = 5;
                     VoiceStatusText.Text = "转写已填入每日复盘回答；请核对后点击“回答并进入下一问”。";
                     break;
             }
@@ -1622,6 +1628,133 @@ public partial class MainWindow : Window
     {
         var outcome = await SendCompanionAsync(new AcknowledgeProactiveCompanionCommand(promptId));
         return outcome?.Success == true;
+    }
+
+    private async void SaveRetentionPolicyButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!int.TryParse(
+                TimelineRetentionDaysBox.Text.Trim(), NumberStyles.None,
+                CultureInfo.InvariantCulture, out var days) || days is < 7 or > 3650)
+        {
+            SetOperationStatus("详细时间线保留天数请填 7–3650 的整数。", isError: true);
+            return;
+        }
+
+        await SendCompanionAsync(new SetDetailedTimelineRetentionCommand(days));
+    }
+
+    private async void QueryDataRangeButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!TryReadDataDateRange(out var start, out var end)) return;
+        var outcome = await SendCompanionAsync(new QueryDataRangeCommand(start, end));
+        if (outcome?.DataRange is not null) RenderDataRange(outcome.DataRange);
+    }
+
+    private void ChooseDataExportPathButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var dialog = new SaveFileDialog
+        {
+            Title = "导出 Jarvis 个人数据",
+            Filter = "Jarvis 加密导出 (*.jarvis-export)|*.jarvis-export",
+            DefaultExt = ".jarvis-export",
+            AddExtension = true,
+            FileName = $"jarvis-export-{DateTime.Today:yyyyMMdd}.jarvis-export"
+        };
+        if (dialog.ShowDialog(this) == true) DataExportPathBox.Text = dialog.FileName;
+    }
+
+    private async void ExportDataRangeButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!TryReadDataDateRange(out var start, out var end)) return;
+        var destination = DataExportPathBox.Text.Trim();
+        if (destination.Length == 0)
+        {
+            SetOperationStatus("请先选择加密导出文件的保存位置。", isError: true);
+            return;
+        }
+        if (DataExportPasswordBox.Password.Length < 12)
+        {
+            SetOperationStatus("导出密码至少需要 12 个字符。", isError: true);
+            return;
+        }
+
+        var outcome = await SendCompanionAsync(new ExportDataRangeCommand(
+            start, end, destination, DataExportPasswordBox.Password));
+        if (outcome?.Success == true) DataExportPasswordBox.Clear();
+    }
+
+    private async void PrepareDataDeletionButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (!TryReadDataDateRange(out var start, out var end)) return;
+        if (DataDeletionScopeBox.SelectedItem is not DataDeletionScope scope)
+        {
+            SetOperationStatus("请先选择删除范围。", isError: true);
+            return;
+        }
+
+        var outcome = await SendCompanionAsync(new PreparePermanentDataDeletionCommand(start, end, scope));
+        if (outcome?.DataDeletion is not { } card) return;
+        _dataDeletionCandidate = card;
+        DataDeletionScopeText.Text =
+            $"{card.ScopeDescription}\n日期：{card.StartDate:yyyy-MM-dd} 至 {card.EndDate:yyyy-MM-dd} · " +
+            $"估算 {card.EstimatedRecordCount} 条\n请完整输入：{card.ConfirmationPhrase}";
+        DataDeletionConfirmationBox.Clear();
+        DataDeletionPanel.Visibility = Visibility.Visible;
+    }
+
+    private async void ConfirmDataDeletionButton_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_dataDeletionCandidate is not { } card)
+        {
+            SetOperationStatus("删除预览已不可用，请重新预览。", isError: true);
+            return;
+        }
+
+        var outcome = await SendCompanionAsync(new ConfirmPermanentDataDeletionCommand(
+            card.CandidateId, DataDeletionConfirmationBox.Text));
+        if (outcome?.Success != true) return;
+        _dataDeletionCandidate = null;
+        DataDeletionConfirmationBox.Clear();
+        DataDeletionPanel.Visibility = Visibility.Collapsed;
+        if (TryReadDataDateRange(out var start, out var end))
+        {
+            var refresh = await SendCompanionAsync(new QueryDataRangeCommand(start, end));
+            if (refresh?.DataRange is not null) RenderDataRange(refresh.DataRange);
+        }
+    }
+
+    private bool TryReadDataDateRange(out DateOnly start, out DateOnly end)
+    {
+        if (DataRangeStartPicker.SelectedDate is not { } startDate ||
+            DataRangeEndPicker.SelectedDate is not { } endDate)
+        {
+            SetOperationStatus("请选择开始和结束日期。", isError: true);
+            start = end = default;
+            return false;
+        }
+        start = DateOnly.FromDateTime(startDate);
+        end = DateOnly.FromDateTime(endDate);
+        if (end < start)
+        {
+            SetOperationStatus("结束日期不能早于开始日期。", isError: true);
+            return false;
+        }
+        return true;
+    }
+
+    private void RenderDataRange(DataRangeView range)
+    {
+        DataTimelineGrid.ItemsSource = range.Timeline;
+        var summaries = range.DailySummaries.Count == 0
+            ? "没有已归档的每日汇总。"
+            : string.Join(" · ", range.DailySummaries.Select(item =>
+                $"{item.Date:MM-dd} 观察 {item.ObservedSeconds / 60:F0}分/相关 {item.RelatedSeconds / 60:F0}分/" +
+                $"分心 {item.DistractingSeconds / 60:F0}分"));
+        DataRangeSummaryText.Text =
+            $"{range.StartDate:yyyy-MM-dd} 至 {range.EndDate:yyyy-MM-dd} · " +
+            $"详细事实 {range.Timeline.Count} 条 · 承诺/回顾 {range.Commitments.Count} 条" +
+            (range.IsTruncated ? " · 时间线过长，当前只显示前 5000 条" : "") +
+            $"\n{summaries}";
     }
 
     private CompanionPersonaSettingsView ReadPersonaSettingsFromForm() => new(
@@ -2016,6 +2149,15 @@ public partial class MainWindow : Window
         DiscardNaturalLanguageCandidateButton.IsEnabled = !_naturalLanguageBusy && _naturalLanguageCandidate is not null;
         AiChatResultText.Text = snapshot.RecentChat.LastOrDefault(item => item.Role == "assistant")?.Text ?? "";
 
+        var governance = snapshot.DataGovernanceProjection;
+        if (!TimelineRetentionDaysBox.IsKeyboardFocusWithin)
+            TimelineRetentionDaysBox.Text = governance.DetailedTimelineRetentionDays.ToString(
+                CultureInfo.InvariantCulture);
+        RetentionStatusText.Text = governance.LastRetentionAppliedAt is null
+            ? $"当前保留 {governance.DetailedTimelineRetentionDays} 天 · 尚未执行到期清理"
+            : $"当前保留 {governance.DetailedTimelineRetentionDays} 天 · " +
+              $"上次清理 {governance.LastRetentionAppliedAt.Value.ToLocalTime():yyyy-MM-dd HH:mm}";
+
         var channel = snapshot.WorktimeChannel;
         WorktimeEnabledBox.IsChecked = channel.Enabled;
         DetailedPreviewBox.IsChecked = channel.PreviewMode == NotificationPreviewMode.Detailed;
@@ -2140,6 +2282,11 @@ public partial class MainWindow : Window
         AiReviewDraftBox.Clear();
         AiTrialEvidenceText.Text = "Core 未连接";
         AiReviewHistoryText.Text = "Core 未连接";
+        RetentionStatusText.Text = "Core 未连接";
+        DataRangeSummaryText.Text = "Core 未连接";
+        DataTimelineGrid.ItemsSource = null;
+        _dataDeletionCandidate = null;
+        DataDeletionPanel.Visibility = Visibility.Collapsed;
         ProactiveCompanionPanel.Visibility = Visibility.Collapsed;
         CompanionPersonaStatusText.Text = "Core 未连接";
         PublishDesktopPetProjection();

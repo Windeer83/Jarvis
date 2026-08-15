@@ -16,6 +16,7 @@ internal sealed class CompanionModule : IAsyncDisposable
     private readonly IWorktimeChannel _worktimeChannel;
     private readonly ICloudAiProvider _aiProvider;
     private readonly IAiCredentialStore _credentialStore;
+    private readonly DataGovernanceService _dataGovernance;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _listenerReady;
     private string? _worktimeError;
@@ -30,7 +31,8 @@ internal sealed class CompanionModule : IAsyncDisposable
         IClock clock,
         IWorktimeChannel worktimeChannel,
         ICloudAiProvider aiProvider,
-        IAiCredentialStore credentialStore)
+        IAiCredentialStore credentialStore,
+        DataGovernanceService dataGovernance)
     {
         _store = store;
         _supervision = supervision;
@@ -38,6 +40,7 @@ internal sealed class CompanionModule : IAsyncDisposable
         _worktimeChannel = worktimeChannel;
         _aiProvider = aiProvider;
         _credentialStore = credentialStore;
+        _dataGovernance = dataGovernance;
     }
 
     public static async Task<CompanionModule> OpenAsync(
@@ -57,7 +60,7 @@ internal sealed class CompanionModule : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(credentialStore);
         var module = new CompanionModule(
             new SqliteCompanionStore(databasePath), supervision, clock, worktimeChannel,
-            aiProvider, credentialStore);
+            aiProvider, credentialStore, new DataGovernanceService(databasePath));
         var dailyConfiguration = await module._store.ReadDailyConfigurationAsync(cancellationToken)
             .ConfigureAwait(false);
         if (dailyConfiguration.ConfiguredAt is null)
@@ -144,6 +147,14 @@ internal sealed class CompanionModule : IAsyncDisposable
                     await DiscardAiReviewDraftAsync(value, cancellationToken),
                 RecordManualAiComparisonCommand value =>
                     await RecordManualAiComparisonAsync(value, cancellationToken),
+                SetDetailedTimelineRetentionCommand value =>
+                    await SetDetailedTimelineRetentionAsync(value, cancellationToken),
+                QueryDataRangeCommand value => await QueryDataRangeAsync(value, cancellationToken),
+                ExportDataRangeCommand value => await ExportDataRangeAsync(value, cancellationToken),
+                PreparePermanentDataDeletionCommand value =>
+                    await PreparePermanentDataDeletionAsync(value, cancellationToken),
+                ConfirmPermanentDataDeletionCommand value =>
+                    await ConfirmPermanentDataDeletionAsync(value, cancellationToken),
                 _ => Fail("companion_command_unknown", "Core 无法识别这项助手操作。")
             };
             if (worktimeEventId is not null)
@@ -194,6 +205,7 @@ internal sealed class CompanionModule : IAsyncDisposable
             await AdvanceDailyReviewAsync(supervision, cancellationToken).ConfigureAwait(false);
             await AdvanceCycleReviewAsync(cancellationToken).ConfigureAwait(false);
             await AdvanceProactiveCompanionAsync(supervision, cancellationToken).ConfigureAwait(false);
+            await _dataGovernance.ApplyRetentionIfDueAsync(_clock.Now, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -240,7 +252,8 @@ internal sealed class CompanionModule : IAsyncDisposable
             await _store.ReadPendingAiReviewDraftAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadConfirmedAiReviewDraftsAsync(cancellationToken).ConfigureAwait(false),
             await _store.ReadAiTrialEvidenceAsync(_clock.Now, cancellationToken).ConfigureAwait(false),
-            Persona: ToPersonaView(personaState));
+            Persona: ToPersonaView(personaState),
+            DataGovernance: await _dataGovernance.ReadStatusAsync(cancellationToken).ConfigureAwait(false));
     }
 
     public async ValueTask DisposeAsync()
@@ -1177,6 +1190,90 @@ internal sealed class CompanionModule : IAsyncDisposable
                 ? "已切换为专业表达；事实、监督规则和正式记录没有变化。"
                 : "陪伴表达边界已保存；事实、监督规则和正式记录没有变化。",
             await SnapshotAsync(cancellationToken));
+    }
+
+    private async Task<CompanionOutcome> SetDetailedTimelineRetentionAsync(
+        SetDetailedTimelineRetentionCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (command.Days is < 7 or > 3650)
+            return Fail("retention_days_invalid", "详细监督时间线保留天数必须在 7–3650 天之间。");
+        await _dataGovernance.SetRetentionDaysAsync(command.Days, cancellationToken).ConfigureAwait(false);
+        await _dataGovernance.ApplyRetentionIfDueAsync(_clock.Now, cancellationToken).ConfigureAwait(false);
+        return Ok($"详细监督时间线将保留 {command.Days} 天；到期只保留每日汇总。",
+            await SnapshotAsync(cancellationToken));
+    }
+
+    private async Task<CompanionOutcome> QueryDataRangeAsync(
+        QueryDataRangeCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var range = await _dataGovernance.QueryRangeAsync(
+                command.StartDate, command.EndDate, cancellationToken).ConfigureAwait(false);
+            return new(true, Message: "已读取所选日期范围；没有读取凭据、聊天或屏幕内容。",
+                Snapshot: await SnapshotAsync(cancellationToken), DataRange: range);
+        }
+        catch (ArgumentException exception)
+        {
+            return Fail("data_range_invalid", exception.Message);
+        }
+    }
+
+    private async Task<CompanionOutcome> ExportDataRangeAsync(
+        ExportDataRangeCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _dataGovernance.ExportRangeAsync(
+                command.StartDate, command.EndDate, command.DestinationPath, command.Password,
+                _clock.Now, cancellationToken).ConfigureAwait(false);
+            return Ok("密码保护导出已写入所选位置；未包含凭据、AI Key、聊天、截图或成长上下文。",
+                await SnapshotAsync(cancellationToken));
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return Fail("data_export_failed", exception.Message);
+        }
+    }
+
+    private async Task<CompanionOutcome> PreparePermanentDataDeletionAsync(
+        PreparePermanentDataDeletionCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var card = await _dataGovernance.PrepareDeletionAsync(
+                command.StartDate, command.EndDate, command.Scope, _clock.Now, cancellationToken)
+                .ConfigureAwait(false);
+            return new(true,
+                Message: $"删除尚未执行。请核对范围并输入完整确认短语；预计涉及 {card.EstimatedRecordCount} 条记录。",
+                Snapshot: await SnapshotAsync(cancellationToken), DataDeletion: card);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            return Fail("data_deletion_invalid", exception.Message);
+        }
+    }
+
+    private async Task<CompanionOutcome> ConfirmPermanentDataDeletionAsync(
+        ConfirmPermanentDataDeletionCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var deleted = await _dataGovernance.ConfirmDeletionAsync(
+                command.CandidateId, command.ConfirmationPhrase, _clock.Now, cancellationToken)
+                .ConfigureAwait(false);
+            return Ok($"已永久删除 {deleted} 条所选范围记录；范围外数据未改变。",
+                await SnapshotAsync(cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Fail("data_deletion_stale_or_unconfirmed", exception.Message);
+        }
     }
 
     private async Task<CompanionOutcome> RespondProactiveCompanionAsync(

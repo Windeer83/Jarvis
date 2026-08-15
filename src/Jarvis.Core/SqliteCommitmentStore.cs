@@ -87,12 +87,12 @@ internal sealed partial class SqliteCommitmentStore
         var version = Convert.ToInt32(
             await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
-        if (version > 7)
+        if (version > 8)
         {
-            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 7。");
+            throw new InvalidOperationException($"数据库版本 {version} 高于当前程序支持的版本 8。");
         }
 
-        if (version == 7)
+        if (version == 8)
         {
             return;
         }
@@ -116,8 +116,44 @@ internal sealed partial class SqliteCommitmentStore
         {
             await MigrateToVersionSixAsync(connection, migration, cancellationToken).ConfigureAwait(false);
         }
-        await MigrateToVersionSevenAsync(connection, migration, cancellationToken).ConfigureAwait(false);
+        if (version < 7)
+        {
+            await MigrateToVersionSevenAsync(connection, migration, cancellationToken).ConfigureAwait(false);
+        }
+        if (version < 8)
+        {
+            await MigrateToVersionEightAsync(connection, migration, cancellationToken).ConfigureAwait(false);
+        }
         await migration.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task MigrateToVersionEightAsync(
+        SqliteConnection connection,
+        SqliteTransaction migration,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteSchemaAsync(connection, migration, """
+            CREATE TABLE data_governance_settings (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                retention_days INTEGER NOT NULL CHECK(retention_days BETWEEN 7 AND 3650),
+                last_retention_at_utc TEXT NULL
+            );
+            INSERT INTO data_governance_settings(singleton,retention_days,last_retention_at_utc)
+            VALUES(1,90,NULL);
+            CREATE TABLE daily_activity_summaries (
+                local_date TEXT PRIMARY KEY,
+                observed_seconds REAL NOT NULL,
+                related_seconds REAL NOT NULL,
+                distracting_seconds REAL NOT NULL,
+                unknown_seconds REAL NOT NULL,
+                unobservable_seconds REAL NOT NULL,
+                idle_seconds REAL NOT NULL,
+                reminder_count INTEGER NOT NULL,
+                response_count INTEGER NOT NULL,
+                updated_at_utc TEXT NOT NULL
+            );
+            PRAGMA user_version = 8;
+            """, cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task MigrateToVersionSevenAsync(

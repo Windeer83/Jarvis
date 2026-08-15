@@ -465,6 +465,76 @@
                                            Margin="0,6,0,0" Foreground="#7A4E00" TextWrapping="Wrap" />
                             </StackPanel>
                         </TabItem>
+                        <TabItem Header="数据保留与导出（T25）">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="10">
+                                    <TextBlock Text="详细监督时间线到期后删除，只保留每日活动汇总；承诺、修订、完成结果与复盘默认长期保留。"
+                                               Foreground="#4A5568" TextWrapping="Wrap" />
+                                    <WrapPanel Margin="0,10,0,8">
+                                        <TextBlock Text="明细保留天数" VerticalAlignment="Center" />
+                                        <TextBox x:Name="TimelineRetentionDaysBox" Width="70" Text="90"
+                                                 Padding="5" Margin="8,0" />
+                                        <Button Content="保存保留策略" Padding="10,5"
+                                                Click="SaveRetentionPolicyButton_Click" />
+                                        <TextBlock x:Name="RetentionStatusText" Margin="12,6,0,0"
+                                                   Foreground="#4A5568" />
+                                    </WrapPanel>
+                                    <Separator Margin="0,4,0,10" />
+                                    <WrapPanel>
+                                        <TextBlock Text="开始日期" VerticalAlignment="Center" />
+                                        <DatePicker x:Name="DataRangeStartPicker" Width="130" Margin="8,0,14,0" />
+                                        <TextBlock Text="结束日期" VerticalAlignment="Center" />
+                                        <DatePicker x:Name="DataRangeEndPicker" Width="130" Margin="8,0,14,0" />
+                                        <Button Content="查看所选范围" Padding="10,5"
+                                                Click="QueryDataRangeButton_Click" />
+                                    </WrapPanel>
+                                    <TextBlock x:Name="DataRangeSummaryText" Text="尚未读取日期范围。"
+                                               Margin="0,8,0,6" TextWrapping="Wrap" />
+                                    <DataGrid x:Name="DataTimelineGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                              Height="190" Margin="0,0,0,10">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="时间" Binding="{Binding At.LocalDateTime, StringFormat={}{0:MM-dd HH:mm:ss}}" Width="130" />
+                                            <DataGridTextColumn Header="类型" Binding="{Binding Category}" Width="100" />
+                                            <DataGridTextColumn Header="摘要" Binding="{Binding Summary}" Width="*" />
+                                            <DataGridTextColumn Header="版本" Binding="{Binding CommitmentVersion}" Width="60" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                    <Separator Margin="0,4,0,10" />
+                                    <TextBlock Text="密码保护导出（只含所选范围的承诺、复盘、监督时间线与每日汇总）"
+                                               FontWeight="SemiBold" />
+                                    <WrapPanel Margin="0,8,0,8">
+                                        <TextBox x:Name="DataExportPathBox" Width="480" Padding="6" IsReadOnly="True" />
+                                        <Button Content="选择文件" Padding="10,5" Margin="8,0,0,0"
+                                                Click="ChooseDataExportPathButton_Click" />
+                                    </WrapPanel>
+                                    <WrapPanel>
+                                        <TextBlock Text="导出密码（至少 12 字符）" VerticalAlignment="Center" />
+                                        <PasswordBox x:Name="DataExportPasswordBox" Width="260" Padding="6" Margin="8,0" />
+                                        <Button Content="生成加密导出" Padding="10,5"
+                                                Click="ExportDataRangeButton_Click" />
+                                    </WrapPanel>
+                                    <Separator Margin="0,12,0,10" />
+                                    <TextBlock Text="永久删除" FontWeight="SemiBold" Foreground="#B42318" />
+                                    <TextBlock Text="先预览范围，再逐字输入 Core 给出的确认短语。此操作不可撤销。"
+                                               Foreground="#7A4E00" TextWrapping="Wrap" />
+                                    <WrapPanel Margin="0,8,0,8">
+                                        <ComboBox x:Name="DataDeletionScopeBox" Width="260" Margin="0,0,8,0" />
+                                        <Button Content="预览永久删除" Padding="10,5"
+                                                Click="PrepareDataDeletionButton_Click" />
+                                    </WrapPanel>
+                                    <Border x:Name="DataDeletionPanel" Visibility="Collapsed" Background="#FFF1F0"
+                                            BorderBrush="#D92D20" BorderThickness="1" CornerRadius="6" Padding="9">
+                                        <StackPanel>
+                                            <TextBlock x:Name="DataDeletionScopeText" TextWrapping="Wrap" />
+                                            <TextBox x:Name="DataDeletionConfirmationBox" Padding="6" Margin="0,8,0,8"
+                                                     ToolTip="逐字输入上面显示的确认短语" />
+                                            <Button Content="确认永久删除" Padding="10,5" Width="130"
+                                                    HorizontalAlignment="Left" Click="ConfirmDataDeletionButton_Click" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
                         <TabItem Header="飞书手机闭环">
                             <StackPanel Margin="10">
                                 <WrapPanel>
