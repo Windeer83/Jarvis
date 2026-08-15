@@ -3,6 +3,8 @@
 **/bin/
 **/obj/
 *.user
+artifacts/
+/installer/GeneratedFiles.wxs
 .env
 .env.*
 !.env.example

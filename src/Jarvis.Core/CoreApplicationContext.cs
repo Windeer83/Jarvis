@@ -10,6 +10,8 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
     private readonly CorePipeServer _pipeServer;
     private readonly NotifyIcon _trayIcon;
     private readonly ToolStripMenuItem _statusItem;
+    private readonly ToolStripMenuItem _loginStartupItem;
+    private readonly LoginStartupRegistration _loginStartup;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly string? _configuredDesktopPath;
     private bool _tickRunning;
@@ -24,10 +26,18 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
         _supervision = supervision;
         _companion = companion;
         _configuredDesktopPath = configuredDesktopPath;
+        _loginStartup = new LoginStartupRegistration(Environment.ProcessPath);
 
         _statusItem = new ToolStripMenuItem("正在读取 Core 状态…") { Enabled = false };
         var openDesktopItem = new ToolStripMenuItem("打开 Jarvis Desktop");
         openDesktopItem.Click += (_, _) => TryStartDesktop(showError: true);
+        _loginStartupItem = new ToolStripMenuItem("Windows 登录后启动（推荐）")
+        {
+            CheckOnClick = true,
+            Checked = _loginStartup.IsEnabled(),
+            Enabled = _loginStartup.CanConfigure
+        };
+        _loginStartupItem.Click += (_, _) => SetLoginStartupFromTray();
         var exitItem = new ToolStripMenuItem("完全退出 Jarvis");
         exitItem.Click += (_, _) => ConfirmAndExit();
 
@@ -42,13 +52,19 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
             _statusItem,
             new ToolStripSeparator(),
             openDesktopItem,
+            _loginStartupItem,
             exitItem
         ]);
         _trayIcon.DoubleClick += (_, _) => TryStartDesktop(showError: true);
 
         _pipeServer = new CorePipeServer(
             CoreProtocol.PipeName,
-            new CoreCommandHandler(_supervision, _companion, productExitRequested: RequestProductExit));
+            new CoreCommandHandler(
+                _supervision,
+                _companion,
+                productExitRequested: RequestProductExit,
+                loginStartupReader: () => _loginStartup.IsEnabled(),
+                loginStartupWriter: SetLoginStartup));
         _pipeServer.Start();
 
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -106,6 +122,30 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
     }
 
     private void RequestProductExit() => Interlocked.Exchange(ref _exitRequested, 1);
+
+    private void SetLoginStartup(bool enabled)
+    {
+        _loginStartup.SetEnabled(enabled);
+        _loginStartupItem.Checked = _loginStartup.IsEnabled();
+    }
+
+    private void SetLoginStartupFromTray()
+    {
+        try
+        {
+            SetLoginStartup(_loginStartupItem.Checked);
+        }
+        catch (Exception exception) when (
+            exception is UnauthorizedAccessException or IOException or InvalidOperationException)
+        {
+            _loginStartupItem.Checked = _loginStartup.IsEnabled();
+            MessageBox.Show(
+                $"无法修改登录自启动：{exception.Message}",
+                "Jarvis Core",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
 
     private async Task RefreshProjectionAsync()
     {

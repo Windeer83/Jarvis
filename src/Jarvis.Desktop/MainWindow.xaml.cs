@@ -94,6 +94,7 @@ public partial class MainWindow : Window
         {
             _refreshTimer.Start();
             await RefreshSnapshotAsync();
+            await RefreshLoginStartupAsync();
         };
         Closing += (_, eventArgs) =>
         {
@@ -1335,6 +1336,54 @@ public partial class MainWindow : Window
     private async void InterpretNaturalLanguageButton_Click(object sender, RoutedEventArgs eventArgs)
     {
         await GenerateNaturalLanguageCandidateAsync();
+    }
+
+    private async Task RefreshLoginStartupAsync()
+    {
+        try
+        {
+            var response = await _coreClient.SendAsync(new CoreRequest(CoreOperations.GetLoginStartup));
+            if (!response.Success || response.LoginStartupEnabled is null)
+            {
+                LoginAutoStartBox.IsEnabled = false;
+                LoginAutoStartStatusText.Text = response.Message ?? "当前构建不能读取登录启动状态。";
+                return;
+            }
+
+            LoginAutoStartBox.IsEnabled = true;
+            LoginAutoStartBox.IsChecked = response.LoginStartupEnabled.Value;
+            LoginAutoStartStatusText.Text = response.LoginStartupEnabled.Value
+                ? "已启用；登录后由 Core 先恢复监督，再打开 Desktop。"
+                : "未启用；Jarvis 未运行时，未来承诺不会被监督。";
+        }
+        catch (Exception exception) when (exception is IOException or TimeoutException)
+        {
+            LoginAutoStartBox.IsEnabled = false;
+            LoginAutoStartStatusText.Text = $"Core 未连接：{exception.Message}";
+        }
+    }
+
+    private async void LoginAutoStartBox_Click(object sender, RoutedEventArgs eventArgs)
+    {
+        var requested = LoginAutoStartBox.IsChecked == true;
+        LoginAutoStartBox.IsEnabled = false;
+        try
+        {
+            var response = await _coreClient.SendAsync(new CoreRequest(
+                CoreOperations.SetLoginStartup,
+                LoginStartupEnabled: requested));
+            SetOperationStatus(
+                response.Message ?? (response.Success ? "登录启动状态已更新。" : "无法修改登录启动状态。"),
+                isError: !response.Success);
+        }
+        catch (Exception exception) when (exception is IOException or TimeoutException)
+        {
+            SetOperationStatus($"Core 未连接：{exception.Message}", isError: true);
+        }
+        finally
+        {
+            await RefreshLoginStartupAsync();
+        }
     }
 
     private async Task GenerateNaturalLanguageCandidateAsync()

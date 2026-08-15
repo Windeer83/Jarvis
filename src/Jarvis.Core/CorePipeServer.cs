@@ -9,7 +9,9 @@ internal sealed class CoreCommandHandler(
     SupervisionModule supervision,
     CompanionModule? companion = null,
     Func<CancellationToken, Task<SupervisionSnapshot>>? projectionReader = null,
-    Action? productExitRequested = null)
+    Action? productExitRequested = null,
+    Func<bool>? loginStartupReader = null,
+    Action<bool>? loginStartupWriter = null)
 {
     public CoreCommandHandler(
         SupervisionModule supervision,
@@ -305,6 +307,20 @@ internal sealed class CoreCommandHandler(
                         outcome.Message,
                         CompanionOutcome: outcome);
                 }
+
+            case CoreOperations.GetLoginStartup when loginStartupReader is not null:
+                return new CoreResponse(true, LoginStartupEnabled: loginStartupReader());
+
+            case CoreOperations.SetLoginStartup
+                when request.LoginStartupEnabled is not null && loginStartupWriter is not null &&
+                     loginStartupReader is not null:
+                loginStartupWriter(request.LoginStartupEnabled.Value);
+                return new CoreResponse(
+                    true,
+                    Message: request.LoginStartupEnabled.Value
+                        ? "已启用 Windows 登录后启动 Jarvis Core。"
+                        : "已关闭 Windows 登录后自动启动；未来承诺只有在 Jarvis 运行时才会被监督。",
+                    LoginStartupEnabled: loginStartupReader());
 
             case CoreOperations.ExitProduct when productExitRequested is not null:
                 productExitRequested();

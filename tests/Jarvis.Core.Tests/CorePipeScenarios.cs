@@ -9,6 +9,31 @@ namespace Jarvis.Core.Tests;
 public sealed class CorePipeScenarios
 {
     [Fact]
+    public async Task Login_startup_setting_round_trips_through_core_owned_callbacks()
+    {
+        using var database = new TemporaryDatabase();
+        var clock = new FakeClock(new DateTimeOffset(2026, 8, 16, 9, 0, 0, TimeSpan.FromHours(8)));
+        await using var module = await SupervisionModule.OpenAsync(
+            database.Path, clock, new FakeActivitySource(), new FakeReminderSink());
+        var enabled = false;
+        var handler = new CoreCommandHandler(
+            module,
+            loginStartupReader: () => enabled,
+            loginStartupWriter: value => enabled = value);
+
+        var initial = await handler.HandleAsync(
+            new CoreRequest(CoreOperations.GetLoginStartup), CancellationToken.None);
+        var changed = await handler.HandleAsync(
+            new CoreRequest(CoreOperations.SetLoginStartup, LoginStartupEnabled: true),
+            CancellationToken.None);
+
+        Assert.False(initial.LoginStartupEnabled);
+        Assert.True(changed.Success);
+        Assert.True(changed.LoginStartupEnabled);
+        Assert.True(enabled);
+    }
+
+    [Fact]
     public async Task Product_exit_is_an_explicit_core_owned_request()
     {
         using var database = new TemporaryDatabase();

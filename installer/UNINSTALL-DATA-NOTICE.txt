@@ -1,0 +1,13 @@
+Jarvis ordinary uninstall data boundary
+
+Ordinary uninstall removes:
+- Jarvis program files
+- Start Menu shortcuts
+- the optional current-user login startup entry
+
+Ordinary uninstall keeps:
+- the local SQLite database and settings under the current user's Jarvis data directory
+- local password-protected backup files, including files in the user-selected Baidu sync directory
+- Jarvis provider credentials and the saved backup password in Windows Credential Manager
+
+Permanent local deletion is a separate twice-confirmed maintenance operation. It does not call the Baidu API, delete cloud files, or find passwords recorded outside Jarvis.

@@ -445,7 +445,8 @@ public sealed record CoreRequest(
     CommitmentTarget? ActivityTarget = null,
     DateTimeOffset? ActivityStateStartedAt = null,
     CompanionCommand? Companion = null,
-    int? RestMinutes = null);
+    int? RestMinutes = null,
+    bool? LoginStartupEnabled = null);
 
 public sealed record CoreResponse(
     bool Success,
@@ -459,7 +460,8 @@ public sealed record CoreResponse(
     RecurrenceChangeCard? RecurrenceChangeCard = null,
     CommitmentRevisionCard? CommitmentRevisionCard = null,
     CommitmentHistoryView? CommitmentHistory = null,
-    CompanionOutcome? CompanionOutcome = null);
+    CompanionOutcome? CompanionOutcome = null,
+    bool? LoginStartupEnabled = null);
 
 public static class CoreProtocol
 {
@@ -513,5 +515,7 @@ public static class CoreOperations
     public const string StartTimedRest = "startTimedRest";
     public const string GetSnapshot = "getSnapshot";
     public const string DispatchCompanion = "dispatchCompanion";
+    public const string GetLoginStartup = "getLoginStartup";
+    public const string SetLoginStartup = "setLoginStartup";
     public const string ExitProduct = "exitProduct";
 }

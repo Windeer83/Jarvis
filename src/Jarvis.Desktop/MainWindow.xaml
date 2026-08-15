@@ -585,6 +585,19 @@
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
+                        <TabItem Header="安装与启动（T27）">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="Jarvis 是本机优先应用，没有项目云端后台。电脑关机、休眠或 Jarvis Core 未运行时不会监督。"
+                                           TextWrapping="Wrap" Foreground="#4A5568" />
+                                <TextBlock Text="本机 SQLite 数据库不做应用内加密；建议开启 Windows 设备加密或 BitLocker。普通卸载会保留数据库、设置、密码保护备份和 Jarvis 凭据。"
+                                           TextWrapping="Wrap" Foreground="#4A5568" Margin="0,5,0,10" />
+                                <CheckBox x:Name="LoginAutoStartBox"
+                                          Content="Windows 登录后先启动 Jarvis Core，再打开 Desktop（推荐）"
+                                          Click="LoginAutoStartBox_Click" />
+                                <TextBlock x:Name="LoginAutoStartStatusText" Text="正在读取登录启动状态……"
+                                           Margin="0,8,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </TabItem>
                         <TabItem Header="飞书手机闭环">
                             <StackPanel Margin="10">
                                 <WrapPanel>
