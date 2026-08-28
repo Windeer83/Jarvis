@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Jarvis 手机阻断探针</string>
+    <string name="accessibility_description">仅记录前台窗口所属包名与时间，用于和使用情况事件比较延迟；不读取页面节点或内容，也不参与阻断。</string>
+</resources>

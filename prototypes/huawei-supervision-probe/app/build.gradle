@@ -1,0 +1,27 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace = "com.jarvis.probe"
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "com.jarvis.probe"
+        minSdk = 29
+        targetSdk = 35
+        versionCode = (project.findProperty("probeVersionCode") ?: "1").toInteger()
+        versionName = project.findProperty("probeVersionName") ?: "0.1-probe"
+    }
+
+    buildTypes {
+        debug {
+            debuggable = true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
