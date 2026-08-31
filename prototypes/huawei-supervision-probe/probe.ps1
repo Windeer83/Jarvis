@@ -211,8 +211,15 @@ function Run-Benchmark {
         throw "One or more target package candidates are not installed. Record the actual package before benchmarking."
     }
 
-    & $Adb shell am start -n "$PackageName/.ProbeActivity" --ez clearLog true --ei startMinutes 30 | Out-Host
+    & $Adb shell am force-stop $PackageName | Out-Null
+    & $Adb shell am start --ez clearLog true --ei startMinutes 30 -n "$PackageName/.ProbeActivity" | Out-Host
     Start-Sleep -Seconds 2
+    $policyState = (& $Adb shell run-as $PackageName cat shared_prefs/probe_policy.xml 2>$null | Out-String)
+    $probeLog = (& $Adb shell run-as $PackageName cat files/probe-events.jsonl 2>$null | Out-String)
+    if ($policyState -notmatch '<boolean name="active" value="true"' -or
+        $probeLog -notmatch '"type":"policy_started"') {
+        throw "The probe policy did not start; stopping before the benchmark to avoid a false result."
+    }
     $targets = @(
         "com.ss.android.ugc.aweme",
         "tv.danmaku.bili",
@@ -252,24 +259,56 @@ function Collect-Results {
     $lines | Set-Content -LiteralPath $logPath -Encoding utf8
 
     $events = @($lines | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
-    $usageTargets = @($events | Where-Object { $_.type -eq "foreground" -and $_.source -eq "usage" -and $_.package -in @(
+    $policyStartEvent = $events | Where-Object type -eq "policy_started" | Select-Object -Last 1
+    $policyStartEpoch = if ($policyStartEvent) { [long]$policyStartEvent.eventEpochMs } else { 0 }
+    $targetPackages = @(
         "com.ss.android.ugc.aweme", "tv.danmaku.bili", "com.xingin.xhs", "com.tencent.mm"
-    ) })
+    )
+    $usageTargets = @($events | Where-Object {
+        $_.type -eq "foreground" -and $_.source -eq "usage" -and
+        $_.package -in $targetPackages -and [long]$_.eventEpochMs -ge $policyStartEpoch
+    })
+    $accessibilityTargets = @($events | Where-Object {
+        $_.type -eq "foreground" -and $_.source -eq "accessibility" -and
+        $_.package -in $targetPackages -and [long]$_.eventEpochMs -ge $policyStartEpoch
+    })
     $launchPath = Join-Path $OutputRoot "benchmark-launches.json"
     $expectedLaunches = if (Test-Path -LiteralPath $launchPath) {
         @(Get-Content -Raw -LiteralPath $launchPath | ConvertFrom-Json)
     } else {
         @()
     }
-    $missedLaunches = @($expectedLaunches | Where-Object {
-        $expected = $_
-        -not ($usageTargets | Where-Object {
-            $_.package -eq $expected.package -and
-            [long]$_.eventEpochMs -ge ([long]$expected.commandEpochMs - 500) -and
-            [long]$_.eventEpochMs -le ([long]$expected.commandEpochMs + 3000)
-        } | Select-Object -First 1)
-    })
-    $latencies = @($usageTargets | ForEach-Object { [long]$_.latencyMs } | Sort-Object)
+    function Match-Launches([object[]]$CandidateEvents) {
+        $usedEventIds = [System.Collections.Generic.HashSet[string]]::new()
+        $matchedEvents = [System.Collections.Generic.List[object]]::new()
+        $missedLaunches = [System.Collections.Generic.List[object]]::new()
+        foreach ($expected in $expectedLaunches) {
+            # Match each launch to one unique device event. The one-second lead
+            # allowance covers measured host/device clock skew plus adb startup.
+            $match = $CandidateEvents | Where-Object {
+                $_.package -eq $expected.package -and
+                -not $usedEventIds.Contains([string]$_.id) -and
+                [long]$_.eventEpochMs -ge ([long]$expected.commandEpochMs - 1000) -and
+                [long]$_.eventEpochMs -le ([long]$expected.commandEpochMs + 3000)
+            } | Sort-Object @{ Expression = {
+                [Math]::Abs([long]$_.eventEpochMs - [long]$expected.commandEpochMs)
+            } } | Select-Object -First 1
+            if ($match) {
+                [void]$usedEventIds.Add([string]$match.id)
+                $matchedEvents.Add($match)
+            } else {
+                $missedLaunches.Add($expected)
+            }
+        }
+        return [pscustomobject]@{
+            matched = @($matchedEvents)
+            missed = @($missedLaunches)
+        }
+    }
+    $usageMatch = Match-Launches $usageTargets
+    $accessibilityMatch = Match-Launches $accessibilityTargets
+    $usageLatencies = @($usageMatch.matched | ForEach-Object { [long]$_.latencyMs } | Sort-Object)
+    $accessibilityLatencies = @($accessibilityMatch.matched | ForEach-Object { [long]$_.latencyMs } | Sort-Object)
     function Percentile([long[]]$Values, [double]$P) {
         if ($Values.Count -eq 0) { return 0 }
         $index = [Math]::Max(0, [Math]::Min($Values.Count - 1, [Math]::Ceiling($P * $Values.Count) - 1))
@@ -278,11 +317,20 @@ function Collect-Results {
     $summary = @(
         "usageTargetEvents=$($usageTargets.Count)"
         "expectedLaunches=$($expectedLaunches.Count)"
-        "missedLaunches=$($missedLaunches.Count)"
-        "usageP50Ms=$(Percentile $latencies 0.50)"
-        "usageP95Ms=$(Percentile $latencies 0.95)"
-        "usageMaxMs=$(if ($latencies.Count) { $latencies[-1] } else { 0 })"
-        "blocks=$(($events | Where-Object type -eq 'blocked').Count)"
+        "matchedLaunches=$($usageMatch.matched.Count)"
+        "missedLaunches=$($usageMatch.missed.Count)"
+        "unmatchedTargetEvents=$($usageTargets.Count - $usageMatch.matched.Count)"
+        "usageP50Ms=$(Percentile $usageLatencies 0.50)"
+        "usageP95Ms=$(Percentile $usageLatencies 0.95)"
+        "usageMaxMs=$(if ($usageLatencies.Count) { $usageLatencies[-1] } else { 0 })"
+        "accessibilityTargetEvents=$($accessibilityTargets.Count)"
+        "accessibilityMatchedLaunches=$($accessibilityMatch.matched.Count)"
+        "accessibilityMissedLaunches=$($accessibilityMatch.missed.Count)"
+        "accessibilityUnmatchedTargetEvents=$($accessibilityTargets.Count - $accessibilityMatch.matched.Count)"
+        "accessibilityP50Ms=$(Percentile $accessibilityLatencies 0.50)"
+        "accessibilityP95Ms=$(Percentile $accessibilityLatencies 0.95)"
+        "accessibilityMaxMs=$(if ($accessibilityLatencies.Count) { $accessibilityLatencies[-1] } else { 0 })"
+        "blockTransitions=$(($events | Where-Object type -eq 'blocked').Count)"
         "temporaryAccess=$(($events | Where-Object type -eq 'temporary_access_started').Count)"
         "availabilityFailures=$(($events | Where-Object { $_.type -eq 'availability' -and $_.detail -like 'unavailable*' }).Count)"
     )

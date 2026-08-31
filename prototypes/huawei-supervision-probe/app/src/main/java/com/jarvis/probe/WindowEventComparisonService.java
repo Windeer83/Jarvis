@@ -1,6 +1,7 @@
 package com.jarvis.probe;
 
 import android.accessibilityservice.AccessibilityService;
+import android.os.SystemClock;
 import android.view.accessibility.AccessibilityEvent;
 
 public final class WindowEventComparisonService extends AccessibilityService {
@@ -18,12 +19,13 @@ public final class WindowEventComparisonService extends AccessibilityService {
         }
         CharSequence packageName = event.getPackageName();
         long detected = System.currentTimeMillis();
-        long eventEpoch = event.getEventTime();
+        long latency = Math.max(0, SystemClock.uptimeMillis() - event.getEventTime());
+        long eventEpoch = detected - latency;
         ProbeLog.event(this, "foreground", "accessibility",
                 packageName == null ? null : packageName.toString(),
                 eventEpoch,
                 detected,
-                Math.max(0, detected - eventEpoch),
+                latency,
                 "TYPE_WINDOW_STATE_CHANGED;no-node-read");
     }
 

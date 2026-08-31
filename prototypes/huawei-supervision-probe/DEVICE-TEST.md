@@ -4,18 +4,18 @@
 
 ## Spike 0 — device and install
 
-- [ ] `probe.ps1 device` reports manufacturer, model, Android API, release and build display.
-- [ ] APK v1 installs.
-- [ ] APK v2 upgrades v1 without uninstalling or losing probe state.
-- [ ] Actual installed package IDs and versions are recorded below.
-- [ ] Usage access, overlay, notifications, accessibility comparison and battery/background status are visible in the probe.
+- [x] `probe.ps1 device` reports manufacturer, model, Android API, release and build display.
+- [x] APK v1 installs.
+- [x] APK v2 upgrades v1 without uninstalling or losing probe state.
+- [x] Actual installed package IDs and versions are recorded below.
+- [x] Usage access, overlay, notifications, accessibility comparison and battery/background status are visible in the probe.
 
 | App | Expected candidate | Actual package/version |
 |---|---|---|
-| Douyin | `com.ss.android.ugc.aweme` | pending |
-| Bilibili | `tv.danmaku.bili` | pending |
-| Xiaohongshu | `com.xingin.xhs` | pending |
-| WeChat | `com.tencent.mm` | pending |
+| Douyin | `com.ss.android.ugc.aweme` | `com.ss.android.ugc.aweme` / 39.8.0 |
+| Bilibili | `tv.danmaku.bili` | `tv.danmaku.bili` / 9.8.0 |
+| Xiaohongshu | `com.xingin.xhs` | `com.xingin.xhs` / 9.44.1 |
+| WeChat | `com.tencent.mm` | `com.tencent.mm` / 8.0.77 |
 
 ## Spike 1 — foreground detection
 
@@ -24,12 +24,17 @@ Usage-event path, 25 automated home launches per target:
 | Metric | Result |
 |---|---|
 | Expected target launches | 100 |
-| Detected target resumes | pending |
-| Missed launches | pending |
-| False target detections | pending |
-| P50 detection latency | pending |
-| P95 detection latency | pending |
-| Maximum detection latency | pending |
+| Detected target resumes | 100 (25 per target) |
+| Missed launches | 0 |
+| False target detections | 0 unmatched target events in the controlled run |
+| P50 detection latency | 163 ms |
+| P95 detection latency | 1,610 ms |
+| Maximum detection latency | 1,617 ms |
+
+The automated run observed 61 blocker state transitions. This is not a 61/100
+success rate: when the full-screen blocker remained visible between repeated
+launches of the same package, the probe deliberately did not log another state
+transition. Route-level blocking success is measured separately in Spike 2.
 
 Accessibility comparison (measurement only):
 
@@ -72,6 +77,6 @@ For each target, perform launches from home, a notification, a deep link and rec
 
 - Gate: **pending** (`pass` / `fail` / `needs explicit accessibility decision`)
 - Tested build commit: pending
-- Tested APK SHA-256: pending
+- Tested APK SHA-256: `D1AD359CD6A4849051B67B09CE5BC0F97989997F10F21B9142D5446138A99C98`
 - Reason: pending
 - Smallest validated production mechanism: pending
