@@ -61,27 +61,53 @@ For each target, perform launches from home, a notification, a deep link and rec
 
 | App | Home | Notification | Deep link | Recents | Stable bypass? |
 |---|---:|---:|---:|---:|---|
-| Douyin | pending | pending | pending | pending | pending |
-| Bilibili | pending | pending | pending | pending | pending |
-| Xiaohongshu | pending | pending | pending | pending | pending |
-| WeChat | pending | pending | pending | pending | pending |
+| Douyin | 25/25 blocked | unavailable: no active notification | 25/25 blocked | 25/25 blocked | None in tested routes |
+| Bilibili | 25/25 blocked | unavailable: no active notification | 25/25 blocked | 25/25 blocked | None in tested routes |
+| Xiaohongshu | 25/25 blocked | unavailable: no active notification | 25/25 blocked | 25/25 blocked | None in tested routes |
+| WeChat | 25/25 blocked | unavailable: no active notification | 25/25 blocked | 25/25 blocked | None in tested routes |
 
-- [ ] Block page reads no target-app content.
-- [ ] Temporary access refuses an empty reason.
-- [ ] A valid reason opens only the current target app for five minutes.
-- [ ] The target is covered again after five minutes.
-- [ ] Policy expiry removes the overlay within ten seconds.
+The deep-link run used each installed app's resolved custom scheme and matched
+100/100 launches to both a usage event and a blocker event. Maximum observed
+host-command-to-block time was 1,217 ms. The recent-task run used the front
+Huawei recents card and matched 100/100 restores to blocker events; the maximum
+usage-event-to-block time was 254 ms. The notification service reported zero
+active notifications for all four target packages, so no real notification
+content or synthetic substitute was used. Notification-route coverage remains
+open until actual target-app notifications are available.
+
+- [x] Block page reads no target-app content.
+- [x] Temporary access refuses an empty reason.
+- [x] A valid reason opens only the current target app for five minutes.
+- [x] The target is covered again after five minutes.
+- [x] Policy expiry removes the overlay within ten seconds.
+
+The empty-reason attempt kept the blocker visible and wrote no temporary-access
+event. A test reason granted only Douyin; Bilibili remained blocked during that
+window. Douyin was covered again 300,148 ms after the grant. A separate
+one-minute policy delivered its exact expiry alarm 21 ms after the scheduled end,
+stopped the foreground service and removed the application-overlay window.
 
 ## Spike 3 — lifecycle and offline
 
-- [ ] A locally confirmed 30-minute policy is persisted; no Windows process is required during execution.
-- [ ] Wi-Fi off: cached policy still blocks and expires locally.
-- [ ] Windows stopped: cached policy still blocks and expires locally.
-- [ ] Screen off/on: service state and blocking recover.
-- [ ] Probe removed from recents: service state and blocking recover or explicitly report unavailable.
+- [x] A locally confirmed 30-minute policy is persisted; no Windows process is required during execution.
+- [x] Wi-Fi off: cached policy still blocks and expires locally.
+- [x] Windows stopped: cached policy still blocks and expires locally.
+- [x] Screen off/on: service state and blocking recover.
+- [x] Probe removed from recents: service state and blocking recover or explicitly report unavailable.
 - [ ] Huawei power-saving mode: observed behavior recorded.
 - [ ] Phone reboot: observed recovery/degraded behavior recorded.
 - [ ] Eight-hour run records background kills, misses and battery delta.
+
+The probe has no Windows runtime or network permission; confirmed policies were
+stored in app-private preferences and executed locally. With Wi-Fi disabled, a
+target remained blocked and a one-minute policy expired 21 ms after its
+scheduled end; Wi-Fi was restored to its prior on state. During a 20-second
+screen-off interval the policy and foreground service remained active, and a
+target was blocked after wake. Swiping the probe's actual Huawei recents card
+away scheduled one service restart, kept the policy active and subsequently
+blocked another target. A shell request for standard battery saver was rejected
+while USB power was connected (the system continued to report OFF), so that
+attempt is not counted as a power-saving result.
 
 ## Verdict
 
