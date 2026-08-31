@@ -40,10 +40,20 @@ Accessibility comparison (measurement only):
 
 | Metric | Result |
 |---|---|
-| Enabled for comparison | pending |
-| Missed launches | pending |
-| P95 detection latency | pending |
-| Material advantage over usage events | pending |
+| Enabled for comparison | Yes; bound before the fair comparison run |
+| Missed launches | 23/100 (all repeated Xiaohongshu launches) |
+| P95 detection latency | 109 ms for the 77 matched launches |
+| Material advantage over usage events | No; lower matched-event latency did not offset misses and duplicate events |
+
+The fair comparison run kept the accessibility service bound and did not use it
+for blocking. Usage events again matched 100/100 launches with 0 misses (P50 106
+ms, P95 193 ms, maximum 236 ms). Accessibility emitted 122 target window
+events, but only 77 could be uniquely matched to the 100 launches; 45 were
+additional events and 23 Xiaohongshu launches had no matching window event.
+Huawei also disabled the accessibility service after an earlier app force-stop.
+The smallest production candidate therefore remains Usage Stats plus a normal
+application overlay; the accessibility comparison must not enter the formal
+skeleton.
 
 ## Spike 2 — overlay blocking
 
@@ -76,7 +86,7 @@ For each target, perform launches from home, a notification, a deep link and rec
 ## Verdict
 
 - Gate: **pending** (`pass` / `fail` / `needs explicit accessibility decision`)
-- Tested build commit: pending
+- Tested build commit: `6f1dc7f`
 - Tested APK SHA-256: `D1AD359CD6A4849051B67B09CE5BC0F97989997F10F21B9142D5446138A99C98`
 - Reason: pending
 - Smallest validated production mechanism: pending

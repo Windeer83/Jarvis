@@ -211,8 +211,9 @@ function Run-Benchmark {
         throw "One or more target package candidates are not installed. Record the actual package before benchmarking."
     }
 
-    & $Adb shell am force-stop $PackageName | Out-Null
-    & $Adb shell am start --ez clearLog true --ei startMinutes 30 -n "$PackageName/.ProbeActivity" | Out-Host
+    # CLEAR_TOP + SINGLE_TOP reliably delivers new benchmark extras to an
+    # existing activity without force-stopping (and disabling) accessibility.
+    & $Adb shell am start -f "0x24000000" --ez clearLog true --ei startMinutes 30 -n "$PackageName/.ProbeActivity" | Out-Host
     Start-Sleep -Seconds 2
     $policyState = (& $Adb shell run-as $PackageName cat shared_prefs/probe_policy.xml 2>$null | Out-String)
     $probeLog = (& $Adb shell run-as $PackageName cat files/probe-events.jsonl 2>$null | Out-String)
