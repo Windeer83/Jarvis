@@ -59,14 +59,13 @@ For each target, perform launches from home, a notification, a deep link and rec
 
 ## Spike 3 — lifecycle and offline
 
-- [ ] A 30-minute policy sent by the Windows pairing probe is persisted and acknowledged.
+- [ ] A locally confirmed 30-minute policy is persisted; no Windows process is required during execution.
 - [ ] Wi-Fi off: cached policy still blocks and expires locally.
 - [ ] Windows stopped: cached policy still blocks and expires locally.
 - [ ] Screen off/on: service state and blocking recover.
 - [ ] Probe removed from recents: service state and blocking recover or explicitly report unavailable.
 - [ ] Huawei power-saving mode: observed behavior recorded.
 - [ ] Phone reboot: observed recovery/degraded behavior recorded.
-- [ ] Reconnection uploads each outbox event once by event ID.
 - [ ] Eight-hour run records background kills, misses and battery delta.
 
 ## Verdict

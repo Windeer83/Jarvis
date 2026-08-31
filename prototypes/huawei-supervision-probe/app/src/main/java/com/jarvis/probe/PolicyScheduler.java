@@ -5,9 +5,11 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.os.SystemClock;
 
 final class PolicyScheduler {
     private static final int REQUEST_CODE = 4311;
+    private static final int SERVICE_RESTART_REQUEST_CODE = 4312;
 
     private PolicyScheduler() {
     }
@@ -35,6 +37,28 @@ final class PolicyScheduler {
     static void cancelExpiry(Context context) {
         AlarmManager manager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
         manager.cancel(expiryIntent(context));
+    }
+
+    static void scheduleServiceRestart(Context context) {
+        AlarmManager manager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+        Intent intent = new Intent(context, SupervisionService.class);
+        intent.setAction("com.jarvis.probe.RESTART_ACTIVE_POLICY");
+        PendingIntent pending = PendingIntent.getForegroundService(
+                context,
+                SERVICE_RESTART_REQUEST_CODE,
+                intent,
+                PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE
+        );
+        long trigger = SystemClock.elapsedRealtime() + 1_000L;
+        boolean exact = Build.VERSION.SDK_INT < 31 || manager.canScheduleExactAlarms();
+        if (exact) {
+            manager.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, pending);
+        } else {
+            manager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, pending);
+        }
+        long now = System.currentTimeMillis();
+        ProbeLog.event(context, "service_restart_scheduled", "task-removed", null,
+                now, now, 0, "exact=" + exact);
     }
 
     private static PendingIntent expiryIntent(Context context) {

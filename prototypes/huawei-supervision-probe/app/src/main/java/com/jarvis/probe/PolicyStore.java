@@ -91,6 +91,13 @@ final class PolicyStore {
         return packageName != null && packageName.equals(allowedPackage);
     }
 
+    static void clearTemporaryAccess(Context context) {
+        prefs(context).edit()
+                .remove(TEMP_PACKAGE)
+                .remove(TEMP_UNTIL_ELAPSED)
+                .apply();
+    }
+
     static void grantTemporaryAccess(Context context, String packageName, String reason) {
         long until = SystemClock.elapsedRealtime() + 5 * 60_000L;
         prefs(context).edit()

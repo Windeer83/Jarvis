@@ -1,6 +1,9 @@
 pluginManagement {
     repositories {
-        google()
+        // Mainland-China mirror for Google's Maven repository. The canonical
+        // Google host is intentionally omitted because it stalls on this probe
+        // machine instead of failing fast.
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
         mavenCentral()
         gradlePluginPortal()
     }
@@ -9,7 +12,7 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        google()
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
         mavenCentral()
     }
 }

@@ -8,6 +8,8 @@ On the owner's Huawei Mate 70 Pro+ (PLA-AL10, HarmonyOS 4.3), can an ordinary pr
 
 This branch is the primary source for GitHub issue #31. Only the measured verdict and the smallest validated mechanism should be carried into production.
 
+The pinned open-source comparison and the exact pieces adopted or rejected are recorded in [OPEN-SOURCE-REUSE.md](OPEN-SOURCE-REUSE.md).
+
 ## Privacy boundary
 
 The probe records only:
@@ -29,6 +31,8 @@ From this directory in PowerShell:
 ```
 
 The script bootstraps the local build tools (after the owner accepts the Android SDK license), builds two same-signature debug APK versions, and then prints the next device command. Tooling is stored under the repository's ignored `.tools` directory.
+
+For mainland-China connectivity, Android SDK packages come from Google's official `googledownloads.cn` repository and the command-line-tools archive is checked against Google's published SHA-256. Gradle obtains Google Maven artifacts through Alibaba Cloud's mirror because the canonical host stalls on the probe machine; no mirror artifact is committed to the repository.
 
 Once the phone is connected and has authorized USB debugging:
 

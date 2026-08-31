@@ -56,6 +56,21 @@ public final class SupervisionService extends Service {
     }
 
     @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        if (PolicyStore.isActive(this)) {
+            try {
+                PolicyScheduler.scheduleServiceRestart(this);
+            } catch (RuntimeException exception) {
+                long now = System.currentTimeMillis();
+                ProbeLog.event(this, "availability", "task-removed", null,
+                        now, now, 0, "unavailable:restart-schedule="
+                                + exception.getClass().getSimpleName());
+            }
+        }
+        super.onTaskRemoved(rootIntent);
+    }
+
+    @Override
     public IBinder onBind(Intent intent) {
         return null;
     }

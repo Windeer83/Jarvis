@@ -15,6 +15,7 @@ $SdkManager = Join-Path $AndroidSdk "cmdline-tools\latest\bin\sdkmanager.bat"
 $Adb = Join-Path $AndroidSdk "platform-tools\adb.exe"
 $Gradle = Join-Path $GradleHome "bin\gradle.bat"
 $PackageName = "com.jarvis.probe"
+$GoogleAndroidRepository = "https://googledownloads.cn/android/repository/"
 
 function Assert-PathInsideToolRoot([string]$Path) {
     $fullToolRoot = [System.IO.Path]::GetFullPath($ToolRoot)
@@ -36,7 +37,10 @@ function Download-Verified(
         }
     }
     Write-Host "Downloading $Url"
-    & curl.exe -L --fail --continue-at - --output $Destination $Url
+    & curl.exe -L --fail --continue-at - `
+        --retry 8 --retry-delay 3 --retry-all-errors `
+        --connect-timeout 30 --speed-time 120 --speed-limit 1024 `
+        --output $Destination $Url
     if ($LASTEXITCODE -ne 0) {
         throw "Download failed for $Url"
     }
@@ -82,7 +86,7 @@ function Ensure-AndroidSdk {
     New-Item -ItemType Directory -Force $ToolRoot | Out-Null
     $zip = Join-Path $ToolRoot "commandlinetools-win-15859902_latest.zip"
     Download-Verified `
-        "https://dl.google.com/android/repository/commandlinetools-win-15859902_latest.zip" `
+        "${GoogleAndroidRepository}commandlinetools-win-15859902_latest.zip" `
         $zip `
         "90ae805d20434428bffcb699c290860f19bb5f66a67e6b330067e3de801fb04a"
 
@@ -102,9 +106,17 @@ function Ensure-AndroidSdk {
     Move-Item -LiteralPath (Join-Path $unpack "cmdline-tools") -Destination $latest
     Remove-Item -LiteralPath $unpack -Recurse
 
-    $yes = (1..40 | ForEach-Object { "y" }) -join [Environment]::NewLine
-    $yes | & $SdkManager --sdk_root=$AndroidSdk --licenses | Out-Host
-    & $SdkManager --sdk_root=$AndroidSdk "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+    $previousRepository = $env:SDK_TEST_BASE_URL
+    $env:SDK_TEST_BASE_URL = $GoogleAndroidRepository
+    try {
+        $yes = (1..40 | ForEach-Object { "y" }) -join [Environment]::NewLine
+        $yes | & $SdkManager --sdk_root=$AndroidSdk --licenses | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "Android SDK license acceptance failed" }
+        & $SdkManager --sdk_root=$AndroidSdk "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+        if ($LASTEXITCODE -ne 0) { throw "Android SDK component installation failed" }
+    } finally {
+        $env:SDK_TEST_BASE_URL = $previousRepository
+    }
 }
 
 function Build-Probe {
@@ -112,16 +124,24 @@ function Build-Probe {
     Ensure-AndroidSdk
     New-Item -ItemType Directory -Force $OutputRoot | Out-Null
     $env:ANDROID_SDK_ROOT = $AndroidSdk
+    $previousVersionCode = $env:ORG_GRADLE_PROJECT_probeVersionCode
+    $previousVersionName = $env:ORG_GRADLE_PROJECT_probeVersionName
     Push-Location $PrototypeRoot
     try {
-        & $Gradle --no-daemon clean assembleDebug -PprobeVersionCode=1 -PprobeVersionName=0.1-probe
+        $env:ORG_GRADLE_PROJECT_probeVersionCode = "1"
+        $env:ORG_GRADLE_PROJECT_probeVersionName = "0.1-probe"
+        & $Gradle --no-daemon clean assembleDebug
         if ($LASTEXITCODE -ne 0) { throw "Probe v1 build failed" }
         Copy-Item -LiteralPath "app\build\outputs\apk\debug\app-debug.apk" -Destination (Join-Path $OutputRoot "jarvis-probe-v1.apk") -Force
 
-        & $Gradle --no-daemon clean assembleDebug -PprobeVersionCode=2 -PprobeVersionName=0.2-probe
+        $env:ORG_GRADLE_PROJECT_probeVersionCode = "2"
+        $env:ORG_GRADLE_PROJECT_probeVersionName = "0.2-probe"
+        & $Gradle --no-daemon clean assembleDebug
         if ($LASTEXITCODE -ne 0) { throw "Probe v2 build failed" }
         Copy-Item -LiteralPath "app\build\outputs\apk\debug\app-debug.apk" -Destination (Join-Path $OutputRoot "jarvis-probe-v2.apk") -Force
     } finally {
+        $env:ORG_GRADLE_PROJECT_probeVersionCode = $previousVersionCode
+        $env:ORG_GRADLE_PROJECT_probeVersionName = $previousVersionName
         Pop-Location
     }
 

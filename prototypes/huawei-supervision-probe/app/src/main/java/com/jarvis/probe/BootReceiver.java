@@ -8,6 +8,8 @@ import android.os.Build;
 public final class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
+        // elapsedRealtime resets on reboot, so a pre-reboot five-minute override must never carry over.
+        PolicyStore.clearTemporaryAccess(context);
         if (!PolicyStore.isActive(context)) {
             return;
         }
