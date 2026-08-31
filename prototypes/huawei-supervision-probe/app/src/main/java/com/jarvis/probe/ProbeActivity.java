@@ -153,7 +153,7 @@ public final class ProbeActivity extends Activity {
             intent.removeExtra("clearLog");
         }
         int minutes = intent.getIntExtra("startMinutes", 0);
-        if (minutes > 0 && minutes <= 120) {
+        if (minutes > 0 && minutes <= 480) {
             intent.removeExtra("startMinutes");
             startPolicy(minutes);
         }
