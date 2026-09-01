@@ -23,9 +23,15 @@ $apksigner = Join-Path $repositoryRoot ".tools\android-probe\sdk\build-tools\36.
 if (-not (Test-Path -LiteralPath $apksigner)) { throw "Android apksigner 36.0.0 is missing." }
 
 $secret = Read-Host "输入并记住长期发布签名密码（未来所有升级都需要它）" -AsSecureString
+$confirmation = Read-Host "再次输入相同密码以确认" -AsSecureString
 $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+$confirmationPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($confirmation)
 try {
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+    $confirmationPlain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($confirmationPointer)
+    if (-not [string]::Equals($plain, $confirmationPlain, [StringComparison]::Ordinal)) {
+        throw "两次输入的签名密码不一致；没有创建或修改签名文件。"
+    }
     $env:JARVIS_MOBILE_SIGNING_PASSWORD = $plain
     if (-not (Test-Path -LiteralPath $KeystorePath)) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $KeystorePath) | Out-Null
@@ -47,7 +53,11 @@ try {
 } finally {
     $env:JARVIS_MOBILE_SIGNING_PASSWORD = $null
     if ($pointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+    if ($confirmationPointer -ne [IntPtr]::Zero) {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($confirmationPointer)
+    }
     $plain = $null
+    $confirmationPlain = $null
 }
 
 Write-Host "Signed APK: $SignedApk"
