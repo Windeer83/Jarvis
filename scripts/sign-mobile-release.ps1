@@ -49,7 +49,15 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "APK signing failed." }
     & $apksigner verify --verbose --print-certs $SignedApk
     if ($LASTEXITCODE -ne 0) { throw "Signed APK verification failed." }
-    Get-FileHash -Algorithm SHA256 -LiteralPath $SignedApk | Format-List
+    $hashAlgorithm = [Security.Cryptography.SHA256]::Create()
+    $signedStream = [IO.File]::OpenRead($SignedApk)
+    try {
+        $signedHash = ([BitConverter]::ToString($hashAlgorithm.ComputeHash($signedStream))).Replace("-", "")
+    } finally {
+        $signedStream.Dispose()
+        $hashAlgorithm.Dispose()
+    }
+    Write-Host "Signed APK SHA-256: $signedHash"
 } finally {
     $env:JARVIS_MOBILE_SIGNING_PASSWORD = $null
     if ($pointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
