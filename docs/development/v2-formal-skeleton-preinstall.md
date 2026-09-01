@@ -1,4 +1,4 @@
-# V2 正式骨架：安装前交接
+# V2 正式骨架：安装与真机验收交接
 
 ## 当前完成边界
 
@@ -38,3 +38,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sign-mobile-re
 7. 断开 Wi-Fi 后确认原策略继续到原结束时间；结束后确认覆盖层释放。最后检查 Desktop 状态和事件记录。
 
 正式验收前不要安装 debug APK；它仅是无长期签名时的构建/临时诊断候选。
+
+## 2026-09-01 正式真机验收结果
+
+- Windows MSI 与手机 APK 均安装为 `0.2.0`；手机正式包使用长期私钥签名，APK v3 签名验证通过。
+- 首次打开扫码页时发现 ZXing 运行时缺少 `androidx.core.content.ContextCompat`。正式工程已显式加入与 `compileSdk 36` 匹配的 `androidx.core:core:1.17.0`，正式构建会运行 `verifyScannerRuntimeClasspath` 防止该依赖再次漏包。修复后同一真机扫码不再崩溃并成功配对。
+- 正式包的使用情况、悬浮窗、通知、精确闹钟与华为后台运行状态均显示可用；没有通过 adb 绕过权限页面。
+- 抖音、B站、小红书和手机微信均在策略执行期间显示 Jarvis 不透明全屏覆盖层。
+- 原因留空时五分钟临时开放被拒绝；填写原因后只开放当前抖音，五分钟后重新阻断。`TemporaryAccessStarted` 与 `TemporaryAccessEnded` 均进入 Core 事件账本。
+- 完全停止 Windows Core 后，手机仍按缓存策略阻断 B站；Core 恢复后离线事件成功补传。
+- 原策略在预定结束时间本地到期，覆盖层释放，抖音保持正常前台，并产生 `PolicyExpired` 事件。
+- 用户此前豁免的省电模式、八小时运行和正式通知入口仍记为未测风险，不得写成通过。
+
+## 正式日常使用前仍需解决
+
+- 校园 Wi-Fi `ncepu-wifi` 开启客户端隔离：电脑与手机虽处同一 IPv4 子网，但双向 Ping 和手机到 Core TCP 均失败。手机热点下局域网配对与同步通过，证明应用链路有效，但手动切热点不接受为日常方案。
+- Windows 当前由系统联网提示生成了 `Jarvis.Core.exe` 的 Public 入站允许规则。正式网络方案确定时必须把 Core 约束到可信接口/网络范围，不能依赖校园网恰好隔离客户端。
+- 校园网络方案的选择与真机门禁记录在 `docs/research/campus-network-sync-options.md`；在该项完成前，只能把当前版本称为“可安装、核心执行闭环通过”，不能称为校园场景免配置可用。
