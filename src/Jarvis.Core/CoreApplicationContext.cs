@@ -7,6 +7,8 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
 {
     private readonly SupervisionModule _supervision;
     private readonly CompanionModule _companion;
+    private readonly MobileSyncModule _mobile;
+    private readonly MobileLanHost _mobileHost;
     private readonly CorePipeServer _pipeServer;
     private readonly NotifyIcon _trayIcon;
     private readonly ToolStripMenuItem _statusItem;
@@ -21,10 +23,14 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
     public CoreApplicationContext(
         SupervisionModule supervision,
         CompanionModule companion,
+        MobileSyncModule mobile,
+        MobileLanHost mobileHost,
         string? configuredDesktopPath)
     {
         _supervision = supervision;
         _companion = companion;
+        _mobile = mobile;
+        _mobileHost = mobileHost;
         _configuredDesktopPath = configuredDesktopPath;
         _loginStartup = new LoginStartupRegistration(Environment.ProcessPath);
 
@@ -64,8 +70,17 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
                 _companion,
                 productExitRequested: RequestProductExit,
                 loginStartupReader: () => _loginStartup.IsEnabled(),
-                loginStartupWriter: SetLoginStartup));
+                loginStartupWriter: SetLoginStartup,
+                mobile: _mobile));
         _pipeServer.Start();
+        try
+        {
+            _mobileHost.StartAsync().GetAwaiter().GetResult();
+        }
+        catch (Exception exception)
+        {
+            _mobile.ReportTransportFailure(exception);
+        }
 
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += OnTimerTick;
@@ -85,6 +100,7 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
             _trayIcon.ContextMenuStrip?.Dispose();
             _trayIcon.Dispose();
             _pipeServer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            _mobileHost.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
 
         base.Dispose(disposing);
@@ -177,6 +193,15 @@ internal sealed class CoreApplicationContext : System.Windows.Forms.ApplicationC
         {
             status += " · 本地备份等待百度网盘客户端处理（云端状态未知）";
         }
+
+        var mobile = await _mobile.GetProjectionAsync();
+        status += mobile.State switch
+        {
+            MobileConnectionState.Ready => " · 手机监督可用",
+            MobileConnectionState.Degraded => " · 手机监督能力降级",
+            MobileConnectionState.Offline => " · 手机离线（执行缓存策略）",
+            _ => ""
+        };
 
         _statusItem.Text = status;
         SetTrayText($"Jarvis Core：{status}");

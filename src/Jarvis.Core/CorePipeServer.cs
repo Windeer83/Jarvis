@@ -11,7 +11,8 @@ internal sealed class CoreCommandHandler(
     Func<CancellationToken, Task<SupervisionSnapshot>>? projectionReader = null,
     Action? productExitRequested = null,
     Func<bool>? loginStartupReader = null,
-    Action<bool>? loginStartupWriter = null)
+    Action<bool>? loginStartupWriter = null,
+    MobileSyncModule? mobile = null)
 {
     public CoreCommandHandler(
         SupervisionModule supervision,
@@ -295,7 +296,10 @@ internal sealed class CoreCommandHandler(
                         ? null
                         : new CompanionOutcome(
                             true,
-                            Snapshot: await companion.SnapshotAsync(cancellationToken).ConfigureAwait(false)));
+                            Snapshot: await companion.SnapshotAsync(cancellationToken).ConfigureAwait(false)),
+                    Mobile: mobile is null
+                        ? null
+                        : await mobile.GetProjectionAsync(cancellationToken).ConfigureAwait(false));
 
             case CoreOperations.DispatchCompanion when request.Companion is not null && companion is not null:
                 {
@@ -321,6 +325,33 @@ internal sealed class CoreCommandHandler(
                         ? "已启用 Windows 登录后启动 Jarvis Core。"
                         : "已关闭 Windows 登录后自动启动；未来承诺只有在 Jarvis 运行时才会被监督。",
                     LoginStartupEnabled: loginStartupReader());
+
+            case CoreOperations.GetMobileStatus when mobile is not null:
+                return new CoreResponse(
+                    true,
+                    Mobile: await mobile.GetProjectionAsync(cancellationToken).ConfigureAwait(false));
+
+            case CoreOperations.CreateMobilePairing when mobile is not null:
+                try
+                {
+                    return new CoreResponse(
+                        true,
+                        Message: "配对码将在 10 分钟后失效，只能使用一次。",
+                        Mobile: await mobile.GetProjectionAsync(cancellationToken).ConfigureAwait(false),
+                        MobilePairingOffer: await mobile.CreatePairingOfferAsync(cancellationToken)
+                            .ConfigureAwait(false));
+                }
+                catch (InvalidOperationException exception)
+                {
+                    return Failure("mobile_already_paired", exception.Message);
+                }
+
+            case CoreOperations.RevokeMobile when mobile is not null:
+                await mobile.RevokeAsync(cancellationToken).ConfigureAwait(false);
+                return new CoreResponse(
+                    true,
+                    Message: "手机配对已撤销，旧令牌不能再同步。",
+                    Mobile: await mobile.GetProjectionAsync(cancellationToken).ConfigureAwait(false));
 
             case CoreOperations.ExitProduct when productExitRequested is not null:
                 productExitRequested();

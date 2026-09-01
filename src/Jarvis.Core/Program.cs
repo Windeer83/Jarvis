@@ -63,7 +63,17 @@ internal static class Program
                 .GetAwaiter()
                 .GetResult();
 
-            using var context = new CoreApplicationContext(supervision, companion, desktopPath);
+            var mobileStore = new SqliteMobileSyncStore(databasePath);
+            mobileStore.InitializeAsync().GetAwaiter().GetResult();
+            var mobileCredentials = new WindowsCredentialStore("Jarvis/Mobile/");
+            var mobileIdentity = MobileLanIdentityFactory.LoadOrCreateAsync(
+                dataDirectory, mobileCredentials).GetAwaiter().GetResult();
+            var mobile = new MobileSyncModule(
+                mobileStore, clock, mobileIdentity.Endpoint, mobileIdentity.CertificateFingerprint);
+            var mobileHost = new MobileLanHost(mobileIdentity, mobile, supervision);
+
+            using var context = new CoreApplicationContext(
+                supervision, companion, mobile, mobileHost, desktopPath);
             System.Windows.Forms.Application.Run(context);
             return 0;
         }

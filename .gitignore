@@ -6,6 +6,9 @@
 **/build/
 prototypes/**/out/
 *.user
+*.jks
+*.keystore
+local.properties
 artifacts/
 /installer/GeneratedFiles.wxs
 .env

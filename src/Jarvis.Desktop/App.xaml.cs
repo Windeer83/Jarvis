@@ -78,6 +78,7 @@ public partial class App : Application
             }
         };
         window.Show();
+        window.OpenConversation();
         desktopPet.Show();
         desktopPet.ApplyProjection(window.CurrentDesktopPetProjection());
         _activationTask = Task.Run(() => WaitForActivation(_shutdown.Token));

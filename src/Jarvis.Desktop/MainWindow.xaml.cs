@@ -43,6 +43,11 @@ public partial class MainWindow : Window
     public event EventHandler<DesktopPetProjection>? DesktopPetProjectionChanged;
     public event EventHandler<CompanionPersonaSettingsChangedEventArgs>? CompanionPersonaSettingsChanged;
 
+    private void OpenMobilePairingButton_Click(object sender, RoutedEventArgs e)
+    {
+        new MobilePairingWindow { Owner = this }.ShowDialog();
+    }
+
     public MainWindow()
     {
         InitializeComponent();
@@ -50,7 +55,7 @@ public partial class MainWindow : Window
         KindBox.ItemsSource = Enum.GetValues<CommitmentKind>();
         KindBox.SelectedItem = CommitmentKind.Computer;
         ModeBox.ItemsSource = Enum.GetValues<SupervisionMode>();
-        ModeBox.SelectedItem = SupervisionMode.Interactive;
+        ModeBox.SelectedItem = SupervisionMode.Passive;
         RuleScopeBox.ItemsSource = RuleScopeChoices;
         RuleScopeBox.DisplayMemberPath = nameof(RuleScopeChoice.Label);
         RuleScopeBox.SelectedIndex = 0;

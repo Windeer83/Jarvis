@@ -461,7 +461,9 @@ public sealed record CoreResponse(
     CommitmentRevisionCard? CommitmentRevisionCard = null,
     CommitmentHistoryView? CommitmentHistory = null,
     CompanionOutcome? CompanionOutcome = null,
-    bool? LoginStartupEnabled = null);
+    bool? LoginStartupEnabled = null,
+    MobileConnectionProjection? Mobile = null,
+    MobilePairingOffer? MobilePairingOffer = null);
 
 public static class CoreProtocol
 {
@@ -517,5 +519,8 @@ public static class CoreOperations
     public const string DispatchCompanion = "dispatchCompanion";
     public const string GetLoginStartup = "getLoginStartup";
     public const string SetLoginStartup = "setLoginStartup";
+    public const string GetMobileStatus = "getMobileStatus";
+    public const string CreateMobilePairing = "createMobilePairing";
+    public const string RevokeMobile = "revokeMobile";
     public const string ExitProduct = "exitProduct";
 }

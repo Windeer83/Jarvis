@@ -1,0 +1,45 @@
+<Window x:Class="Jarvis.Desktop.MobilePairingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Jarvis · 手机监督" Width="590" Height="760"
+        MinWidth="520" MinHeight="660" WindowStartupLocation="CenterOwner"
+        Background="#F4F5F7" FontFamily="Microsoft YaHei UI">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="24">
+            <TextBlock Text="手机监督" FontSize="26" FontWeight="SemiBold" Foreground="#172033" />
+            <TextBlock Text="一台电脑只配对一部手机。二维码十分钟有效，连接使用局域网证书指纹固定。"
+                       Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#5B6474" />
+
+            <Border Background="White" CornerRadius="10" Padding="16" Margin="0,18,0,0">
+                <StackPanel>
+                    <TextBlock Text="当前状态" FontWeight="SemiBold" FontSize="17" />
+                    <TextBlock x:Name="StatusText" Text="正在读取…" Margin="0,8,0,0"
+                               TextWrapping="Wrap" Foreground="#344054" />
+                </StackPanel>
+            </Border>
+
+            <Image x:Name="QrImage" Width="320" Height="320" Margin="0,18,0,0"
+                   Stretch="Uniform" Visibility="Collapsed" />
+            <TextBlock x:Name="OfferText" Margin="0,10,0,0" TextWrapping="Wrap"
+                       Foreground="#344054" />
+            <TextBox x:Name="PayloadBox" Margin="0,10,0,0" Padding="8" Height="72"
+                     TextWrapping="Wrap" IsReadOnly="True" Visibility="Collapsed"
+                     ToolTip="相机不可用时，可复制到手机端。此内容包含十分钟有效的一次性配对码。" />
+
+            <WrapPanel Margin="0,18,0,0">
+                <Button Content="生成一次性配对码" Padding="14,8"
+                        Click="CreatePairingButton_Click" />
+                <Button Content="刷新状态" Padding="14,8" Margin="10,0,0,0"
+                        Click="RefreshButton_Click" />
+                <Button Content="撤销当前手机" Padding="14,8" Margin="10,0,0,0"
+                        Click="RevokeButton_Click" />
+            </WrapPanel>
+
+            <Border Background="#FFF7E6" BorderBrush="#E7B85C" BorderThickness="1"
+                    CornerRadius="8" Padding="12" Margin="0,18,0,0">
+                <TextBlock TextWrapping="Wrap"
+                           Text="正式安装后：先让电脑与手机连接同一局域网，再扫描二维码。手机令牌不会显示在此窗口，也不会写入聊天记录。普通应用只能尽力覆盖目标应用，并非系统级禁用。" />
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</Window>
