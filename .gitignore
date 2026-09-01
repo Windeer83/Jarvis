@@ -2,6 +2,9 @@
 .vs/
 **/bin/
 **/obj/
+**/.gradle/
+**/build/
+prototypes/**/out/
 *.user
 artifacts/
 /installer/GeneratedFiles.wxs
