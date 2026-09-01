@@ -1,0 +1,15 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Segoe UI;}}
+\f0\fs20
+\b Jarvis v0.1 - first setup and privacy boundary\b0\par
+\par
+Supported platform: Windows 11 x64 desktop editions only. Other platforms are not claimed as compatible.\par
+\par
+Jarvis is local-first and does not use a project-operated cloud backend. Supervision stops when this PC is off, asleep, offline where an external action is required, or Jarvis Core is not running.\par
+\par
+The local SQLite database is stored under the current Windows user profile and is not application-encrypted. Anyone able to read that Windows account's files may read it. Enable Windows device encryption or BitLocker when appropriate.\par
+\par
+Setup recommends starting Jarvis when you sign in. The optional feature is selected by default and can be cleared on the next screen or disabled later. At sign-in, Jarvis Core starts first and opens Jarvis Desktop. Closing the Desktop window hides it; full product exit is a separate confirmed action.\par
+\par
+Ordinary uninstall removes program files, Start Menu entries, and the login startup entry. It keeps the local SQLite database, settings, local password-protected backup files, and Jarvis credentials in Windows Credential Manager so reinstall can continue. Permanent deletion is a separate twice-confirmed operation. Jarvis never calls the Baidu API or deletes cloud copies during uninstall.\par
+}

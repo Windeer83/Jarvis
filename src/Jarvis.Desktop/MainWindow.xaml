@@ -1,0 +1,904 @@
+<Window x:Class="Jarvis.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Jarvis · 工作承诺"
+        Height="930" Width="1060" MinHeight="720" MinWidth="900"
+        Background="#F4F5F7" FontFamily="Microsoft YaHei UI">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="#172033" CornerRadius="12" Padding="18,14" Margin="0,0,0,14">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Left">
+                    <TextBlock Text="Jarvis 工作承诺" Foreground="White" FontSize="24" FontWeight="SemiBold" />
+                    <TextBlock x:Name="CoreStatusText" Text="正在连接 Jarvis Core…"
+                               Foreground="#BFC9DC" Margin="0,4,0,0" />
+                </StackPanel>
+                <Button x:Name="RefreshButton" DockPanel.Dock="Right" Content="刷新状态"
+                        Width="96" Height="34" Click="RefreshButton_Click" />
+            </DockPanel>
+        </Border>
+
+        <ScrollViewer x:Name="ContentScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <Border x:Name="RevisionModePanel" Visibility="Collapsed" Background="#EAF3FF"
+                        BorderBrush="#6B93C9" BorderThickness="1" CornerRadius="10"
+                        Padding="14" Margin="0,0,0,14">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,18,0">
+                            <TextBlock Text="正在修订承诺" FontSize="17" FontWeight="SemiBold"
+                                       Foreground="#244A86" />
+                            <TextBlock x:Name="RevisionModeText" Margin="0,4,0,0"
+                                       Foreground="#4A6282" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="修改原因（必填）" FontWeight="SemiBold" />
+                            <TextBox x:Name="RevisionReasonBox" Margin="0,5,12,0" Padding="6"
+                                     ToolTip="用一句话说明为什么修改；原因会永久保留在历史中。" />
+                            <TextBlock Text="只从确认修订的时刻向后生效；此前记录不会被改写。"
+                                       Margin="0,5,0,0" Foreground="#5B6474" />
+                        </StackPanel>
+                        <Button Grid.Column="2" Content="取消修订" Width="88" Height="32"
+                                Click="CancelRevisionButton_Click" />
+                    </Grid>
+                </Border>
+
+                <GroupBox Header="承诺内容（一次性、模板与重复安排共用）" Padding="14" Margin="0,0,0,14">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="150" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="承诺类型" VerticalAlignment="Center" Margin="0,6" />
+                        <ComboBox x:Name="KindBox" Grid.Row="0" Grid.Column="1" Margin="0,4,18,4"
+                                  SelectionChanged="KindBox_SelectionChanged" />
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="监督模式" VerticalAlignment="Center" Margin="0,6" />
+                        <ComboBox x:Name="ModeBox" Grid.Row="0" Grid.Column="3" Margin="0,4" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="开始日期" VerticalAlignment="Center" Margin="0,6" />
+                        <DatePicker x:Name="StartDatePicker" Grid.Row="1" Grid.Column="1" Margin="0,4,18,4" />
+                        <TextBlock Grid.Row="1" Grid.Column="2" Text="开始时间（HH:mm）" VerticalAlignment="Center" Margin="0,6" />
+                        <TextBox x:Name="StartTimeBox" Grid.Row="1" Grid.Column="3" Margin="0,4" Padding="6" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="持续分钟" VerticalAlignment="Center" Margin="0,6" />
+                        <TextBox x:Name="DurationBox" Grid.Row="2" Grid.Column="1" Margin="0,4,18,4" Padding="6" />
+                        <TextBlock Grid.Row="2" Grid.Column="2" Text="提醒默认值" VerticalAlignment="Center" Margin="0,6" />
+                        <TextBlock Grid.Row="2" Grid.Column="3" Margin="0,4" VerticalAlignment="Center"
+                                   Text="开始仅本机 · 偏离 5/20/20 分钟 · 最多 3 条手机提醒"
+                                   TextWrapping="Wrap" Foreground="#4A5568" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="投入目标（可选）" VerticalAlignment="Center" Margin="0,6" />
+                        <TextBox x:Name="InputGoalBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="3"
+                                 Margin="0,4" Padding="6" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="成果目标（可选）" VerticalAlignment="Center" Margin="0,6" />
+                        <TextBox x:Name="OutcomeGoalBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3"
+                                 Margin="0,4" Padding="6" />
+
+                        <TextBlock x:Name="AppsLabel" Grid.Row="5" Grid.Column="0" Text="相关软件" VerticalAlignment="Center" Margin="0,6" />
+                        <TextBox x:Name="AppsBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="3"
+                                 Margin="0,4" Padding="6" ToolTip="多个软件用逗号分隔，例如 Excel.exe, Obsidian.exe" />
+
+                        <TextBlock x:Name="SitesLabel" Grid.Row="6" Grid.Column="0" Text="相关网站" VerticalAlignment="Center" Margin="0,6" />
+                        <TextBox x:Name="SitesBox" Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="3"
+                                 Margin="0,4" Padding="6" ToolTip="多个域名用逗号分隔，例如 tradingview.com" />
+
+                        <StackPanel Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="4" Orientation="Horizontal" Margin="0,12,0,0">
+                            <Button x:Name="PreviewButton" Content="预览一次性承诺" Width="140" Height="36"
+                                    Click="PreviewButton_Click" />
+                            <TextBlock x:Name="FormHintText" Margin="12,8,0,0" Foreground="#5B6474"
+                                       Text="至少填写投入目标或成果目标；电脑型承诺至少填写一个相关软件或网站。" />
+                        </StackPanel>
+                    </Grid>
+                </GroupBox>
+
+                <GroupBox Header="监督默认设置（模板会完整保存，本次预览可覆盖）" Padding="12" Margin="0,0,0,14">
+                    <StackPanel>
+                        <WrapPanel Margin="0,0,0,8">
+                            <CheckBox x:Name="StartReminderCheckBox" Content="开始时提醒" VerticalAlignment="Center" Margin="0,0,18,0" />
+                            <TextBlock Text="本机偏离" VerticalAlignment="Center" />
+                            <TextBox x:Name="LocalDeviationBox" Width="42" Margin="5,0,4,0" Padding="4" />
+                            <TextBlock Text="分钟" VerticalAlignment="Center" Margin="0,0,14,0" />
+                            <TextBlock Text="首次手机" VerticalAlignment="Center" />
+                            <TextBox x:Name="FirstMobileDeviationBox" Width="42" Margin="5,0,4,0" Padding="4" />
+                            <TextBlock Text="分钟" VerticalAlignment="Center" Margin="0,0,14,0" />
+                            <TextBlock Text="手机重复" VerticalAlignment="Center" />
+                            <TextBox x:Name="MobileRepeatBox" Width="42" Margin="5,0,4,0" Padding="4" />
+                            <TextBlock Text="分钟，最多" VerticalAlignment="Center" />
+                            <TextBox x:Name="MaxMobileRemindersBox" Width="36" Margin="5,0,4,0" Padding="4" />
+                            <TextBlock Text="次" VerticalAlignment="Center" Margin="0,0,14,0" />
+                            <CheckBox x:Name="SoundEnabledCheckBox" Content="声音" VerticalAlignment="Center" Margin="0,0,14,0" />
+                            <CheckBox x:Name="QuietPresentationCheckBox" Content="安静呈现" VerticalAlignment="Center" />
+                        </WrapPanel>
+
+                        <WrapPanel Margin="0,0,0,8">
+                            <TextBlock Text="闲置询问" VerticalAlignment="Center" />
+                            <TextBox x:Name="RestIdlePromptBox" Width="42" Margin="5,0,4,0" Padding="4" />
+                            <TextBlock Text="分钟；默认总休息" VerticalAlignment="Center" />
+                            <TextBox x:Name="RestTotalBox" Width="42" Margin="5,0,4,0" Padding="4" />
+                            <TextBlock Text="分钟" VerticalAlignment="Center" />
+                        </WrapPanel>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="105" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="90" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="相关 Related" VerticalAlignment="Center" Margin="0,4" />
+                            <TextBox x:Name="RelatedAppsRuleBox" Grid.Row="0" Grid.Column="1" Margin="0,3,10,3" Padding="5"
+                                     ToolTip="软件名，用逗号分隔" />
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="网站域名" VerticalAlignment="Center" />
+                            <TextBox x:Name="RelatedDomainsRuleBox" Grid.Row="0" Grid.Column="3" Margin="0,3" Padding="5" />
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="偏离 Distracting" VerticalAlignment="Center" Margin="0,4" />
+                            <TextBox x:Name="DistractingAppsRuleBox" Grid.Row="1" Grid.Column="1" Margin="0,3,10,3" Padding="5" />
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="网站域名" VerticalAlignment="Center" />
+                            <TextBox x:Name="DistractingDomainsRuleBox" Grid.Row="1" Grid.Column="3" Margin="0,3" Padding="5" />
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="未确定 Unknown" VerticalAlignment="Center" Margin="0,4" />
+                            <TextBox x:Name="UnknownAppsRuleBox" Grid.Row="2" Grid.Column="1" Margin="0,3,10,3" Padding="5" />
+                            <TextBlock Grid.Row="2" Grid.Column="2" Text="网站域名" VerticalAlignment="Center" />
+                            <TextBox x:Name="UnknownDomainsRuleBox" Grid.Row="2" Grid.Column="3" Margin="0,3" Padding="5" />
+                        </Grid>
+                    </StackPanel>
+                </GroupBox>
+
+                <GroupBox x:Name="TemplateGroup" Header="模板（不含日期，保存不会创建承诺）" Padding="12" Margin="0,0,0,14">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="125" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="模板名称" VerticalAlignment="Center" />
+                        <TextBox x:Name="TemplateNameBox" Grid.Row="0" Grid.Column="1" Margin="0,0,10,0" Padding="6" />
+                        <Button Grid.Row="0" Grid.Column="2" Content="新建模板" Width="90" Margin="0,0,8,0" Click="CreateTemplateButton_Click" />
+                        <ComboBox x:Name="TemplateBox" Grid.Row="0" Grid.Column="3" Width="170" Margin="0,0,8,0"
+                                  DisplayMemberPath="Name" SelectionChanged="TemplateBox_SelectionChanged" />
+                        <Button Grid.Row="0" Grid.Column="4" Content="更新所选" Width="90" Margin="0,0,8,0" Click="UpdateTemplateButton_Click" />
+                        <StackPanel Grid.Row="0" Grid.Column="5" Orientation="Horizontal">
+                            <Button Content="归档" Width="70" Margin="0,0,8,0" Click="ArchiveTemplateButton_Click" />
+                            <Button Content="按模板预览" Width="100" Click="PrepareFromTemplateButton_Click" />
+                        </StackPanel>
+                        <CheckBox x:Name="OverrideTemplateSupervisionCheckBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="5"
+                                  Content="本次覆盖模板内容与监督设置（不勾选则完整继承模板；不会改模板本身）"
+                                  Margin="0,8,0,0" />
+                    </Grid>
+                </GroupBox>
+
+                <GroupBox x:Name="RecurrenceGroup" Header="重复安排（确认前不写入）" Padding="12" Margin="0,0,0,14">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="105" />
+                            <ColumnDefinition Width="145" />
+                            <ColumnDefinition Width="95" />
+                            <ColumnDefinition Width="145" />
+                            <ColumnDefinition Width="95" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="重复方式" VerticalAlignment="Center" />
+                        <ComboBox x:Name="RecurrenceKindBox" Grid.Row="0" Grid.Column="1" Margin="0,0,10,6"
+                                  SelectionChanged="RecurrenceKindBox_SelectionChanged" />
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="范围开始" VerticalAlignment="Center" />
+                        <DatePicker x:Name="RangeStartPicker" Grid.Row="0" Grid.Column="3" Margin="0,0,10,6" />
+                        <TextBlock Grid.Row="0" Grid.Column="4" Text="范围结束" VerticalAlignment="Center" />
+                        <DatePicker x:Name="RangeEndPicker" Grid.Row="0" Grid.Column="5" Margin="0,0,10,6" />
+                        <Button Grid.Row="0" Grid.Column="6" Grid.RowSpan="2" Content="预览重复安排" Width="115" Height="34"
+                                Click="PreviewRecurrenceButton_Click" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="周几 / 指定日期" VerticalAlignment="Center" />
+                        <TextBox x:Name="RecurrenceValuesBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="5" Padding="6"
+                                 ToolTip="每周：1,3,5；指定日期：2026-08-13,2026-08-15" />
+                    </Grid>
+                </GroupBox>
+
+                <Border x:Name="CardBorder" Visibility="Collapsed" Background="#FFF7DB"
+                        BorderBrush="#E7B84B" BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,14">
+                    <StackPanel>
+                        <TextBlock x:Name="CardHeaderText" Text="候选卡片 · 等待确认" FontSize="18" FontWeight="SemiBold" Foreground="#6A4B00" />
+                        <TextBlock x:Name="CardText" Margin="0,10,0,12" TextWrapping="Wrap" LineHeight="23" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="ConfirmButton" Content="确认，正式成立" Width="140" Height="36"
+                                    Click="ConfirmButton_Click" />
+                            <Button Content="放弃这张卡片" Width="120" Height="36" Margin="10,0,0,0"
+                                    Click="DiscardCardButton_Click" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border x:Name="SupervisionPanel" Visibility="Collapsed" Background="#EEF4FF"
+                        BorderBrush="#7296D8" BorderThickness="1" CornerRadius="10"
+                        Padding="14" Margin="0,0,0,14">
+                    <StackPanel>
+                        <DockPanel>
+                            <TextBlock Text="当前监督" FontSize="18" FontWeight="SemiBold"
+                                       Foreground="#244A86" />
+                            <TextBlock x:Name="ReminderMarkerText" DockPanel.Dock="Right"
+                                       Text="● 有待处理提醒" Foreground="#B54708"
+                                       FontWeight="SemiBold" Visibility="Collapsed" />
+                        </DockPanel>
+                        <TextBlock x:Name="ActiveSupervisionText" Margin="0,8,0,8"
+                                   TextWrapping="Wrap" LineHeight="22" />
+                        <Border x:Name="ReminderBubble" Background="#FFF4D6" CornerRadius="8"
+                                Padding="10" Margin="0,0,0,10" Visibility="Collapsed">
+                            <TextBlock x:Name="ReminderBubbleText" TextWrapping="Wrap" />
+                        </Border>
+                        <WrapPanel>
+                            <Button Content="马上回去" Margin="0,0,8,8" Padding="12,5"
+                                    Click="ReturnNowButton_Click" />
+                            <Button x:Name="CurrentRelatedButton" Content="本次活动相关" Margin="0,0,8,8" Padding="12,5"
+                                    Click="CurrentRelatedButton_Click" />
+                            <Button x:Name="CurrentDistractingButton" Content="本次活动分心" Margin="0,0,8,8" Padding="12,5"
+                                    Click="CurrentDistractingButton_Click" />
+                            <ComboBox x:Name="RuleScopeBox" Width="120" Height="30" Margin="0,0,8,8" />
+                            <Button x:Name="AcceptRestButton" Content="确认正在休息" Margin="0,0,8,8"
+                                    Padding="12,5" Click="AcceptRestButton_Click" />
+                            <Button x:Name="DenyRestButton" Content="不是休息" Margin="0,0,8,8"
+                                    Padding="12,5" Click="DenyRestButton_Click" />
+                            <TextBox x:Name="RestDurationMinutesBox" Width="72" Height="30" Margin="0,0,6,8"
+                                     Padding="5" Text="15" ToolTip="主动休息时长（分钟），例如 15" />
+                            <TextBlock Text="分钟" VerticalAlignment="Center" Margin="0,0,8,8" />
+                            <Button Content="主动限时休息" Margin="0,0,8,8" Padding="12,5"
+                                    Click="StartTimedRestButton_Click" />
+                        </WrapPanel>
+                        <WrapPanel Margin="0,2,0,0">
+                            <CheckBox x:Name="MuteSoundBox" Content="静音" Margin="0,0,14,0"
+                                      Checked="PresentationMode_Changed" Unchecked="PresentationMode_Changed" />
+                            <CheckBox x:Name="QuietModeBox" Content="安静/会议/演示（隐藏气泡）"
+                                      Margin="0,0,14,0" Checked="PresentationMode_Changed"
+                                      Unchecked="PresentationMode_Changed" />
+                            <TextBlock x:Name="FullscreenStateText" Text="全屏自动识别：否"
+                                       Margin="0,0,14,0" />
+                            <TextBlock Text="安静/会议/演示由你明确开启；全屏自动识别。它们只改变本机呈现，不改变 Core 计时。"
+                                       Foreground="#5B6474" />
+                        </WrapPanel>
+                    </StackPanel>
+                </Border>
+
+                <GroupBox Header="手机闭环、复盘与 AI（T15–T20）" Padding="10" Margin="0,0,0,14">
+                    <TabControl x:Name="CompanionTabs">
+                        <TabItem Header="自然语言 / AI">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="安排或修改工作（生成确认卡）" FontWeight="SemiBold" />
+                                <TextBlock Text="直接描述你想安排或修改的工作。AI 只生成候选卡，确认前不会执行。"
+                                           Foreground="#4A5568" Margin="0,0,0,8" />
+                                <TextBox x:Name="NaturalLanguageBox" MinHeight="64" TextWrapping="Wrap"
+                                         AcceptsReturn="True" Padding="8"
+                                         ToolTip="例如：明天下午三点监督我写报告一小时，只允许 Word。" />
+                                <WrapPanel Margin="0,8,0,8">
+                                    <Button x:Name="GenerateNaturalLanguageCandidateButton"
+                                            Content="生成候选操作" Padding="14,6" Margin="0,0,8,0"
+                                            Click="InterpretNaturalLanguageButton_Click" />
+                                    <Button x:Name="ConfirmNaturalLanguageCandidateButton"
+                                            Content="确认候选" Padding="14,6" Margin="0,0,8,0"
+                                            IsEnabled="False"
+                                            Click="ConfirmNaturalLanguageCandidateButton_Click" />
+                                    <Button x:Name="DiscardNaturalLanguageCandidateButton"
+                                            Content="放弃候选" Padding="14,6"
+                                            IsEnabled="False"
+                                            Click="DiscardNaturalLanguageCandidateButton_Click" />
+                                </WrapPanel>
+                                <StackPanel x:Name="NaturalLanguageBusyPanel" Orientation="Horizontal"
+                                            Visibility="Collapsed" Margin="0,0,0,8">
+                                    <ProgressBar Width="150" Height="8" IsIndeterminate="True"
+                                                 VerticalAlignment="Center" Margin="0,0,10,0" />
+                                    <TextBlock Text="正在生成候选操作，请稍后…" Foreground="#1769AA" />
+                                </StackPanel>
+                                <TextBlock x:Name="NaturalLanguageCandidateText" Text="当前没有候选操作。"
+                                           TextWrapping="Wrap" Margin="0,0,0,12" />
+                                <Separator />
+                                <WrapPanel Margin="0,10,0,6">
+                                    <TextBlock Text="硅基流动 API Key" VerticalAlignment="Center" />
+                                    <PasswordBox x:Name="AiCredentialBox" Width="300" Margin="8,0" Padding="6" />
+                                    <Button Content="保存到 Windows 凭据管理器" Padding="10,5"
+                                            Click="SaveAiCredentialButton_Click" />
+                                    <Button Content="删除本机凭据" Padding="10,5" Margin="8,0,0,0"
+                                            Click="DeleteAiCredentialButton_Click" />
+                                    <TextBlock Text="月度硬上限（元）" VerticalAlignment="Center" Margin="16,0,5,0" />
+                                    <TextBox x:Name="AiHardCapBox" Width="72" Text="30" Padding="5" />
+                                    <Button Content="设置上限" Padding="10,5" Margin="8,0,0,0"
+                                            Click="SetAiMonthlyHardCapButton_Click" />
+                                </WrapPanel>
+                                <WrapPanel Margin="0,2,0,6">
+                                    <TextBlock Text="全局模型" VerticalAlignment="Center" />
+                                    <ComboBox x:Name="AiModelPreferenceBox" Width="190" Margin="8,0"
+                                              Padding="5" />
+                                    <Button Content="应用模型" Padding="10,5"
+                                            Click="SetAiModelPreferenceButton_Click" />
+                                    <TextBlock Text="默认全部使用 Flash；需要时可手动切换为 Pro。"
+                                               VerticalAlignment="Center" Foreground="#4A5568" Margin="10,0,0,0" />
+                                </WrapPanel>
+                                <TextBlock x:Name="AiStatusText" Text="AI 未配置" Foreground="#4A5568" />
+                                <TextBlock Text="发送时，当前输入与完成该候选所需的最小承诺投影会发往硅基流动；所有用途均使用上方由你选择的模型。不会发送屏幕、按键、聊天历史或完整监督数据库。"
+                                           Foreground="#7A4E00" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                <TextBlock Text="普通对话（只回答文字，不会创建、修改或启动监督）"
+                                           FontWeight="SemiBold" Margin="0,10,0,0" />
+                                <TextBox x:Name="AiChatBox" MinHeight="52" TextWrapping="Wrap" AcceptsReturn="True"
+                                         Margin="0,8,0,6" Padding="8" />
+                                <Button Content="发送基础对话" Width="120" Padding="10,5"
+                                        Click="SendAiChatButton_Click" />
+                                <TextBlock x:Name="AiChatResultText" Margin="0,8,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem Header="陪伴人格（T23）">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="陪伴设置只改变称呼、语气和主动交流频率，不改变事实、监督规则或正式记录。"
+                                           Foreground="#4A5568" TextWrapping="Wrap" />
+                                <WrapPanel Margin="0,10,0,8">
+                                    <CheckBox x:Name="PersonaProfessionalModeBox" Content="专业模式"
+                                              VerticalAlignment="Center" Margin="0,0,16,0" />
+                                    <CheckBox x:Name="PersonaProactiveEnabledBox" Content="允许非工作时段低频主动问候"
+                                              VerticalAlignment="Center" IsChecked="True" />
+                                </WrapPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="130" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Text="允许的称呼（可空）" VerticalAlignment="Center" />
+                                    <TextBox x:Name="PersonaPreferredAddressBox" Grid.Row="0" Grid.Column="1"
+                                             Padding="6" Margin="8,3" />
+                                    <TextBlock Grid.Row="1" Text="不喜欢的称呼" VerticalAlignment="Center" />
+                                    <TextBox x:Name="PersonaDisallowedAddressesBox" Grid.Row="1" Grid.Column="1"
+                                             Padding="6" Margin="8,3" ToolTip="逗号或换行分隔" />
+                                    <TextBlock Grid.Row="2" Text="不喜欢的语气" VerticalAlignment="Center" />
+                                    <TextBox x:Name="PersonaDislikedToneBox" Grid.Row="2" Grid.Column="1"
+                                             Padding="6" Margin="8,3" TextWrapping="Wrap" />
+                                    <TextBlock Grid.Row="3" Text="互动边界" VerticalAlignment="Center" />
+                                    <TextBox x:Name="PersonaBoundaryBox" Grid.Row="3" Grid.Column="1"
+                                             Padding="6" Margin="8,3" TextWrapping="Wrap" AcceptsReturn="True"
+                                             MinHeight="48" />
+                                </Grid>
+                                <Button Content="保存陪伴边界" Width="130" HorizontalAlignment="Left"
+                                        Padding="10,5" Click="SaveCompanionPersonaButton_Click" />
+                                <TextBlock Text="没有亲密度、关系阶段、心情、投喂、金币或照顾任务；忽略一次即结束，不追问。"
+                                           Foreground="#7A4E00" TextWrapping="Wrap" Margin="0,8,0,12" />
+                                <Separator />
+                                <TextBlock Text="当前主动问候" FontWeight="SemiBold" Margin="0,10,0,4" />
+                                <Border x:Name="ProactiveCompanionPanel" Background="#F2F7FF"
+                                        BorderBrush="#8BB8F1" BorderThickness="1" CornerRadius="8"
+                                        Padding="10" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock x:Name="ProactiveCompanionPromptText" TextWrapping="Wrap" />
+                                        <TextBox x:Name="ProactiveCompanionResponseBox" Margin="0,8,0,6"
+                                                 Padding="6" TextWrapping="Wrap" AcceptsReturn="True"
+                                                 ToolTip="回应后本次问候立即结束；不会追问。" />
+                                        <WrapPanel>
+                                            <Button Content="回应并结束" Padding="10,5" Margin="0,0,8,0"
+                                                    Click="RespondProactiveCompanionButton_Click" />
+                                            <Button Content="忽略并结束" Padding="10,5"
+                                                    Click="DismissProactiveCompanionButton_Click" />
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+                                <TextBlock x:Name="CompanionPersonaStatusText" Margin="0,8,0,0"
+                                           Foreground="#4A5568" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem Header="主动语音（T24）">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="只有点击“开始说话”后才使用麦克风；转写可编辑，确认前不会提交。原始录音不写文件、不进入数据库。"
+                                           Foreground="#4A5568" TextWrapping="Wrap" />
+                                <WrapPanel Margin="0,10,0,8">
+                                    <TextBlock Text="语音用于" VerticalAlignment="Center" />
+                                    <ComboBox x:Name="VoiceTargetBox" Width="330" Margin="8,0,10,0"
+                                              DisplayMemberPath="Label" />
+                                    <Button x:Name="StartVoiceCaptureButton" Content="开始说话" Padding="12,5"
+                                            Margin="0,0,8,0" Click="StartVoiceCaptureButton_Click" />
+                                    <Button x:Name="StopVoiceCaptureButton" Content="结束录音" Padding="12,5"
+                                            IsEnabled="False" Click="StopVoiceCaptureButton_Click" />
+                                </WrapPanel>
+                                <TextBox x:Name="VoiceTranscriptBox" Height="95" AcceptsReturn="True"
+                                         TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="8"
+                                         ToolTip="识别完成后请核对或修改；只有下方确认按钮会继续。" />
+                                <WrapPanel Margin="0,8,0,8">
+                                    <Button x:Name="ConfirmVoiceTranscriptButton" Content="确认转写并继续"
+                                            Padding="12,5" Margin="0,0,8,0"
+                                            Click="ConfirmVoiceTranscriptButton_Click" />
+                                    <Button Content="清空转写" Padding="12,5" Margin="0,0,14,0"
+                                            Click="ClearVoiceTranscriptButton_Click" />
+                                    <CheckBox x:Name="VoiceGlobalMuteBox" Content="全局静音" Margin="0,0,14,0"
+                                              VerticalAlignment="Center" Checked="VoiceSettings_Changed"
+                                              Unchecked="VoiceSettings_Changed" />
+                                    <CheckBox x:Name="VoiceHeadphonesOnlyBox" Content="仅确认默认设备为耳机时播放"
+                                              VerticalAlignment="Center" Checked="VoiceSettings_Changed"
+                                              Unchecked="VoiceSettings_Changed" />
+                                </WrapPanel>
+                                <WrapPanel>
+                                    <Button Content="临时静音 30 分钟" Padding="10,5" Margin="0,0,8,0"
+                                            Click="TemporaryMuteVoiceButton_Click" />
+                                    <Button Content="取消临时静音" Padding="10,5" Margin="0,0,8,0"
+                                            Click="ClearTemporaryMuteVoiceButton_Click" />
+                                    <Button Content="停止朗读" Padding="10,5" Click="StopSpeakingButton_Click" />
+                                </WrapPanel>
+                                <TextBlock x:Name="VoiceStatusText" Text="语音输入未启动；始终可以使用原有文字输入。"
+                                           Margin="0,10,0,0" Foreground="#4A5568" TextWrapping="Wrap" />
+                                <TextBlock Text="朗读只用于用户主动发起的本轮普通对话；监督提醒不会突然朗读。专业/安静/全屏边界下仅显示文字。"
+                                           Margin="0,6,0,0" Foreground="#7A4E00" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem Header="数据保留与导出（T25）">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="10">
+                                    <TextBlock Text="详细监督时间线到期后删除，只保留每日活动汇总；承诺、修订、完成结果与复盘默认长期保留。"
+                                               Foreground="#4A5568" TextWrapping="Wrap" />
+                                    <WrapPanel Margin="0,10,0,8">
+                                        <TextBlock Text="明细保留天数" VerticalAlignment="Center" />
+                                        <TextBox x:Name="TimelineRetentionDaysBox" Width="70" Text="90"
+                                                 Padding="5" Margin="8,0" />
+                                        <Button Content="保存保留策略" Padding="10,5"
+                                                Click="SaveRetentionPolicyButton_Click" />
+                                        <TextBlock x:Name="RetentionStatusText" Margin="12,6,0,0"
+                                                   Foreground="#4A5568" />
+                                    </WrapPanel>
+                                    <Separator Margin="0,4,0,10" />
+                                    <WrapPanel>
+                                        <TextBlock Text="开始日期" VerticalAlignment="Center" />
+                                        <DatePicker x:Name="DataRangeStartPicker" Width="130" Margin="8,0,14,0" />
+                                        <TextBlock Text="结束日期" VerticalAlignment="Center" />
+                                        <DatePicker x:Name="DataRangeEndPicker" Width="130" Margin="8,0,14,0" />
+                                        <Button Content="查看所选范围" Padding="10,5"
+                                                Click="QueryDataRangeButton_Click" />
+                                    </WrapPanel>
+                                    <TextBlock x:Name="DataRangeSummaryText" Text="尚未读取日期范围。"
+                                               Margin="0,8,0,6" TextWrapping="Wrap" />
+                                    <DataGrid x:Name="DataTimelineGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                              Height="190" Margin="0,0,0,10">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="时间" Binding="{Binding At.LocalDateTime, StringFormat={}{0:MM-dd HH:mm:ss}}" Width="130" />
+                                            <DataGridTextColumn Header="类型" Binding="{Binding Category}" Width="100" />
+                                            <DataGridTextColumn Header="摘要" Binding="{Binding Summary}" Width="*" />
+                                            <DataGridTextColumn Header="版本" Binding="{Binding CommitmentVersion}" Width="60" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                    <Separator Margin="0,4,0,10" />
+                                    <TextBlock Text="密码保护导出（只含所选范围的承诺、复盘、监督时间线与每日汇总）"
+                                               FontWeight="SemiBold" />
+                                    <WrapPanel Margin="0,8,0,8">
+                                        <TextBox x:Name="DataExportPathBox" Width="480" Padding="6" IsReadOnly="True" />
+                                        <Button Content="选择文件" Padding="10,5" Margin="8,0,0,0"
+                                                Click="ChooseDataExportPathButton_Click" />
+                                    </WrapPanel>
+                                    <WrapPanel>
+                                        <TextBlock Text="导出密码（至少 12 字符）" VerticalAlignment="Center" />
+                                        <PasswordBox x:Name="DataExportPasswordBox" Width="260" Padding="6" Margin="8,0" />
+                                        <Button Content="生成加密导出" Padding="10,5"
+                                                Click="ExportDataRangeButton_Click" />
+                                    </WrapPanel>
+                                    <Separator Margin="0,12,0,10" />
+                                    <TextBlock Text="永久删除" FontWeight="SemiBold" Foreground="#B42318" />
+                                    <TextBlock Text="先预览范围，再逐字输入 Core 给出的确认短语。此操作不可撤销。"
+                                               Foreground="#7A4E00" TextWrapping="Wrap" />
+                                    <WrapPanel Margin="0,8,0,8">
+                                        <ComboBox x:Name="DataDeletionScopeBox" Width="260" Margin="0,0,8,0" />
+                                        <Button Content="预览永久删除" Padding="10,5"
+                                                Click="PrepareDataDeletionButton_Click" />
+                                    </WrapPanel>
+                                    <Border x:Name="DataDeletionPanel" Visibility="Collapsed" Background="#FFF1F0"
+                                            BorderBrush="#D92D20" BorderThickness="1" CornerRadius="6" Padding="9">
+                                        <StackPanel>
+                                            <TextBlock x:Name="DataDeletionScopeText" TextWrapping="Wrap" />
+                                            <TextBox x:Name="DataDeletionConfirmationBox" Padding="6" Margin="0,8,0,8"
+                                                     ToolTip="逐字输入上面显示的确认短语" />
+                                            <Button Content="确认永久删除" Padding="10,5" Width="130"
+                                                    HorizontalAlignment="Left" Click="ConfirmDataDeletionButton_Click" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+                        <TabItem Header="备份与恢复（T26）">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="10">
+                                    <TextBlock Text="Jarvis 只向你选择的百度网盘客户端同步目录写入密码保护备份；不调用百度 API，也不会声称云端上传成功。"
+                                               Foreground="#4A5568" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="BackupStatusText" Text="备份尚未配置。"
+                                               Margin="0,8,0,10" TextWrapping="Wrap" />
+                                    <WrapPanel>
+                                        <TextBox x:Name="BackupDirectoryBox" Width="620" Padding="6" IsReadOnly="True" />
+                                        <Button Content="选择百度同步目录" Padding="10,5" Margin="8,0,0,0"
+                                                Click="ChooseBackupDirectoryButton_Click" />
+                                    </WrapPanel>
+                                    <WrapPanel Margin="0,8,0,8">
+                                        <TextBlock Text="备份密码" VerticalAlignment="Center" />
+                                        <PasswordBox x:Name="BackupPasswordBox" Width="240" Padding="6" Margin="8,0" />
+                                        <TextBlock Text="重复密码" VerticalAlignment="Center" />
+                                        <PasswordBox x:Name="BackupConfirmPasswordBox" Width="240" Padding="6" Margin="8,0" />
+                                        <CheckBox x:Name="SaveBackupPasswordBox" Content="保存到 Windows 凭据管理器"
+                                                  VerticalAlignment="Center" />
+                                    </WrapPanel>
+                                    <WrapPanel>
+                                        <Button Content="保存备份设置" Padding="10,5"
+                                                Click="ConfigureBackupButton_Click" />
+                                        <Button Content="立即备份" Padding="10,5" Margin="8,0,0,0"
+                                                Click="CreateManualBackupButton_Click" />
+                                        <Button Content="删除本机保存的备份密码" Padding="10,5" Margin="8,0,0,0"
+                                                Click="ForgetBackupPasswordButton_Click" />
+                                    </WrapPanel>
+                                    <Separator Margin="0,12,0,10" />
+                                    <TextBlock Text="隔离测试与恢复" FontWeight="SemiBold" />
+                                    <TextBlock Text="测试只在隔离临时目录解密校验。正式恢复会先排队，完全退出并重新打开 Jarvis 时才替换数据库。"
+                                               Foreground="#4A5568" TextWrapping="Wrap" />
+                                    <WrapPanel Margin="0,8,0,8">
+                                        <TextBox x:Name="RestoreBackupPathBox" Width="620" Padding="6" IsReadOnly="True" />
+                                        <Button Content="选择 .jarvis-backup" Padding="10,5" Margin="8,0,0,0"
+                                                Click="ChooseRestoreBackupButton_Click" />
+                                    </WrapPanel>
+                                    <WrapPanel>
+                                        <TextBlock Text="该文件的备份密码" VerticalAlignment="Center" />
+                                        <PasswordBox x:Name="RestoreBackupPasswordBox" Width="260" Padding="6" Margin="8,0" />
+                                        <Button Content="隔离测试" Padding="10,5"
+                                                Click="TestBackupRestoreButton_Click" />
+                                        <Button Content="验证并排队恢复" Padding="10,5" Margin="8,0,0,0"
+                                                Click="ScheduleBackupRestoreButton_Click" />
+                                    </WrapPanel>
+                                    <TextBlock x:Name="BackupOperationText" Margin="0,10,0,0"
+                                               Text="尚无本次备份/恢复操作。" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+                        <TabItem Header="安装与启动（T27）">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="Jarvis 是本机优先应用，没有项目云端后台。电脑关机、休眠或 Jarvis Core 未运行时不会监督。"
+                                           TextWrapping="Wrap" Foreground="#4A5568" />
+                                <TextBlock Text="本机 SQLite 数据库不做应用内加密；建议开启 Windows 设备加密或 BitLocker。普通卸载会保留数据库、设置、密码保护备份和 Jarvis 凭据。"
+                                           TextWrapping="Wrap" Foreground="#4A5568" Margin="0,5,0,10" />
+                                <CheckBox x:Name="LoginAutoStartBox"
+                                          Content="Windows 登录后先启动 Jarvis Core，再打开 Desktop（推荐）"
+                                          Click="LoginAutoStartBox_Click" />
+                                <TextBlock x:Name="LoginAutoStartStatusText" Text="正在读取登录启动状态……"
+                                           Margin="0,8,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem Header="更新与安全清除（T28）">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="10">
+                                    <TextBlock Text="Jarvis 不会静默下载或安装更新。请先把新版 MSI 下载到本机；监督进行中时默认阻止更新。"
+                                               TextWrapping="Wrap" Foreground="#4A5568" />
+                                    <WrapPanel Margin="0,8,0,0">
+                                        <TextBox x:Name="UpdateInstallerPathBox" Width="620" Padding="6" IsReadOnly="True" />
+                                        <Button Content="选择新版 MSI" Padding="10,5" Margin="8,0,0,0"
+                                                Click="ChooseUpdateInstallerButton_Click" />
+                                    </WrapPanel>
+                                    <CheckBox x:Name="StopForUpdateBox"
+                                              Content="若当前正在监督，明确停止并进入待回顾后再更新"
+                                              Margin="0,8,0,0" />
+                                    <Button Content="升级前检查与备份" Width="150" HorizontalAlignment="Left"
+                                            Margin="0,8,0,0" Padding="10,5" Click="PrepareUpdateButton_Click" />
+                                    <Border x:Name="ProductUpdatePanel" Visibility="Collapsed" Background="#FFF8E1"
+                                            BorderBrush="#D69E2E" BorderThickness="1" CornerRadius="6" Padding="9" Margin="0,8,0,0">
+                                        <StackPanel>
+                                            <TextBlock x:Name="ProductUpdateCardText" TextWrapping="Wrap" />
+                                            <TextBox x:Name="ProductUpdateConfirmationBox" Padding="6" Margin="0,8" />
+                                            <Button Content="确认退出并更新" Padding="10,5" Width="140"
+                                                    HorizontalAlignment="Left" Click="ConfirmUpdateButton_Click" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Separator Margin="0,14,0,10" />
+                                    <TextBlock Text="安全清除本机 Jarvis" FontWeight="SemiBold" />
+                                    <TextBlock Text="这是普通卸载之外的永久操作。它会删除本机数据库、设置、日志、费用记录、配置目录中的 Jarvis 备份和 Jarvis 凭据；不会调用百度 API、删除云端文件或寻找外部密码。"
+                                               TextWrapping="Wrap" Foreground="#9B2C2C" Margin="0,4,0,8" />
+                                    <WrapPanel>
+                                        <TextBox x:Name="FinalBackupDirectoryBox" Width="620" Padding="6" IsReadOnly="True" />
+                                        <Button Content="选择范围外的最终备份目录" Padding="10,5" Margin="8,0,0,0"
+                                                Click="ChooseFinalBackupDirectoryButton_Click" />
+                                    </WrapPanel>
+                                    <WrapPanel Margin="0,8,0,0">
+                                        <TextBlock Text="最终备份密码" VerticalAlignment="Center" />
+                                        <PasswordBox x:Name="FinalBackupPasswordBox" Width="240" Margin="8,0" Padding="6" />
+                                        <TextBlock Text="重复密码" VerticalAlignment="Center" />
+                                        <PasswordBox x:Name="FinalBackupConfirmPasswordBox" Width="240" Margin="8,0" Padding="6" />
+                                    </WrapPanel>
+                                    <Button Content="第一次确认：生成最终备份并预览范围" Padding="10,5" Width="240"
+                                            HorizontalAlignment="Left" Margin="0,8,0,0" Click="PrepareSafeEraseButton_Click" />
+                                    <Border x:Name="SafeErasePanel" Visibility="Collapsed" Background="#FFF1F0"
+                                            BorderBrush="#D92D20" BorderThickness="1" CornerRadius="6" Padding="9" Margin="0,8,0,0">
+                                        <StackPanel>
+                                            <TextBlock x:Name="SafeEraseCardText" TextWrapping="Wrap" />
+                                            <TextBox x:Name="SafeEraseConfirmationBox" Padding="6" Margin="0,8" />
+                                            <Button Content="第二次确认：退出并永久清除" Padding="10,5" Width="210"
+                                                    HorizontalAlignment="Left" Click="ConfirmSafeEraseButton_Click" />
+                                        </StackPanel>
+                                    </Border>
+                                    <TextBlock x:Name="MaintenanceOperationText" Text="尚无维护操作。"
+                                               Margin="0,10,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+                        <TabItem Header="飞书手机闭环">
+                            <StackPanel Margin="10">
+                                <WrapPanel>
+                                    <CheckBox x:Name="WorktimeEnabledBox" Content="启用" VerticalAlignment="Center" />
+                                    <TextBlock x:Name="LarkCliHelpText" Text="本机飞书命令工具（CLI）" VerticalAlignment="Center" Margin="12,0,5,0"
+                                               ToolTip="Jarvis 在本机调用的 lark-cli 程序；通常保持默认值即可。" />
+                                    <TextBox x:Name="LarkCliPathBox" Width="230" Text="lark-cli" Padding="5"
+                                             ToolTip="通常保持 lark-cli；只有自定义安装位置时才填写完整路径。" />
+                                    <TextBlock x:Name="LarkProfileHelpText" Text="授权配置名（profile）" VerticalAlignment="Center" Margin="12,0,5,0"
+                                               ToolTip="lark-cli 中保存飞书应用授权的配置名称，不是你的昵称或聊天 ID。" />
+                                    <TextBox x:Name="LarkProfileBox" Width="120" Text="jarvis-t04" Padding="5" />
+                                    <CheckBox x:Name="DetailedPreviewBox" Content="通知显示详细摘要" Margin="12,0,0,0"
+                                              VerticalAlignment="Center" />
+                                    <Button Content="保存并启动" Margin="10,0,0,0" Padding="10,5"
+                                            Click="ConfigureWorktimeButton_Click" />
+                                </WrapPanel>
+                                <TextBlock Text="默认隐私预览只提示解锁查看；可选详细摘要仍不会显示软件、域名、文件名或正文。启用后，在飞书私聊机器人发送“绑定 Jarvis”。"
+                                           Margin="0,10,0,6" TextWrapping="Wrap" Foreground="#4A5568" />
+                                <TextBlock x:Name="WorktimeStatusText" Text="飞书通道未启用" TextWrapping="Wrap" />
+                                <DataGrid x:Name="MobileCardGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                          Height="210" Margin="0,10,0,0">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="#" Binding="{Binding Sequence}" Width="40" />
+                                        <DataGridTextColumn Header="发送时间" Binding="{Binding SentAt.LocalDateTime, StringFormat={}{0:MM-dd HH:mm}}" Width="130" />
+                                        <DataGridTextColumn Header="承诺" Binding="{Binding CommitmentSummary}" Width="*" />
+                                        <DataGridTextColumn Header="分类" Binding="{Binding Classification}" Width="90" />
+                                        <DataGridTextColumn Header="状态" Binding="{Binding State}" Width="100" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem Header="承诺 / 每日复盘">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="承诺到点只停止监督并进入待回顾，不会自动标记完成。" Foreground="#4A5568" />
+                                <WrapPanel Margin="0,8,0,6">
+                                    <Button Content="提前结束所选承诺" Padding="10,5" Margin="0,0,8,0"
+                                            Click="EndSelectedCommitmentButton_Click" />
+                                    <TextBox x:Name="CommitmentChangeReasonBox" Width="180" Padding="6" Margin="0,0,8,0"
+                                             ToolTip="取消或推迟原因（必填）" />
+                                    <Button Content="取消所选承诺" Padding="10,5" Margin="0,0,8,0"
+                                            Click="CancelSelectedCommitmentButton_Click" />
+                                    <TextBox x:Name="CommitmentDeferStartBox" Width="135" Padding="6" Margin="0,0,8,0"
+                                             ToolTip="推迟到：yyyy-MM-dd HH:mm" />
+                                    <Button Content="按剩余时长推迟" Padding="10,5" Margin="0,0,8,0"
+                                            Click="DeferSelectedCommitmentButton_Click" />
+                                    <ComboBox x:Name="CompletionAssessmentBox" Width="120" Margin="0,0,8,0" />
+                                    <TextBox x:Name="CommitmentReviewTextBox" Width="420" Padding="6"
+                                             ToolTip="保留原始回顾文字" />
+                                    <Button x:Name="SubmitCommitmentReviewButton" Content="提交回顾" Padding="10,5" Margin="8,0,0,0"
+                                            Click="SubmitCommitmentReviewButton_Click" />
+                                    <Button Content="30 分钟后回顾" Padding="10,5" Margin="8,0,0,0"
+                                            Click="DeferCommitmentReviewButton_Click" />
+                                    <Button Content="跳过回顾" Padding="10,5" Margin="8,0,0,0"
+                                            Click="SkipCommitmentReviewButton_Click" />
+                                </WrapPanel>
+                                <TextBlock x:Name="CommitmentReviewStatusText"
+                                           Text="选择下方待回顾条目；只有一条时会自动选中。"
+                                           Margin="0,0,0,6" Foreground="#4A5568" TextWrapping="Wrap" />
+                                <ListBox x:Name="CommitmentReviewList" Height="90" />
+                                <Separator Margin="0,10" />
+                                <WrapPanel>
+                                    <TextBlock Text="每天" VerticalAlignment="Center" />
+                                    <TextBox x:Name="DailyReviewTimeBox" Width="70" Text="23:00" Margin="6,0" Padding="5" />
+                                    <Button Content="保存时间" Padding="9,5" Click="ConfigureDailyReviewButton_Click" />
+                                    <Button Content="现在开始" Padding="9,5" Margin="8,0,0,0" Click="StartDailyReviewButton_Click" />
+                                    <Button Content="30 分钟后" Padding="9,5" Margin="8,0,0,0" Click="SnoozeDailyReviewButton_Click" />
+                                    <Button Content="60 分钟后" Padding="9,5" Margin="8,0,0,0" Click="SnoozeDailyReviewSixtyButton_Click" />
+                                    <Button Content="跳过" Padding="9,5" Margin="8,0,0,0" Click="SkipDailyReviewButton_Click" />
+                                </WrapPanel>
+                                <TextBlock x:Name="DailyReviewQuestionText" Margin="0,8,0,5" Text="每日复盘未到时间。" />
+                                <Border Background="#F7F9FC" BorderBrush="#D8DEE9" BorderThickness="1"
+                                        CornerRadius="6" Padding="8" Margin="0,0,0,8">
+                                    <StackPanel>
+                                        <TextBlock Text="最近一次每日复盘记录" FontWeight="SemiBold" />
+                                        <TextBlock x:Name="DailyReviewRecordText" Text="尚无每日复盘记录。"
+                                                   Margin="0,4,0,0" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Border>
+                                <WrapPanel>
+                                    <TextBox x:Name="DailyReviewAnswerBox" Width="700" Padding="6" />
+                                    <Button Content="回答并进入下一问" Padding="10,5" Margin="8,0,0,0"
+                                            Click="AnswerDailyReviewButton_Click" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem Header="周期复盘">
+                            <StackPanel Margin="10">
+                                <WrapPanel>
+                                    <TextBlock Text="周期天数" VerticalAlignment="Center" />
+                                    <TextBox x:Name="CycleIntervalBox" Width="55" Text="14" Margin="6,0" Padding="5" />
+                                    <TextBlock Text="时间" VerticalAlignment="Center" />
+                                    <TextBox x:Name="CycleReviewTimeBox" Width="70" Text="20:00" Margin="6,0" Padding="5" />
+                                    <Button Content="保存未来边界" Padding="10,5" Click="ConfigureCycleReviewButton_Click" />
+                                    <Button Content="开始待处理周期复盘" Padding="10,5" Margin="8,0,0,0"
+                                            Click="StartCycleReviewButton_Click" />
+                                </WrapPanel>
+                                <TextBlock x:Name="CycleReviewSummaryText" Margin="0,10,0,8" TextWrapping="Wrap"
+                                           Text="周期复盘尚未到期。" />
+                                <TextBlock Text="确认 1–3 个下周期重点（每行一个）" />
+                                <TextBox x:Name="CycleFocusesBox" Height="85" AcceptsReturn="True" Padding="7" />
+                                <Button Content="确认重点" Width="100" Padding="10,5" Margin="0,8,0,0"
+                                        Click="ConfirmCycleFocusesButton_Click" />
+                            </StackPanel>
+                        </TabItem>
+                        <TabItem Header="AI 复盘辅助（T21）">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="10">
+                                    <TextBlock Text="AI 只接收当前复盘所需的 Core 事实投影；输出先作为草稿，确认前不会进入正式记录。"
+                                               Foreground="#4A5568" TextWrapping="Wrap" />
+                                    <WrapPanel Margin="0,10,0,8">
+                                        <Button x:Name="GenerateDailyAiReviewButton" Content="整理当前每日复盘"
+                                                Padding="10,5" Margin="0,0,8,0"
+                                                Click="GenerateDailyAiReviewButton_Click" />
+                                        <Button x:Name="GenerateCycleAiReviewButton" Content="整理当前周期复盘"
+                                                Padding="10,5" Margin="0,0,8,0"
+                                                Click="GenerateCycleAiReviewButton_Click" />
+                                        <ProgressBar x:Name="AiReviewBusyBar" Width="150" Height="16"
+                                                     IsIndeterminate="True" Visibility="Collapsed" />
+                                    </WrapPanel>
+                                    <TextBlock x:Name="AiReviewDraftStatusText" Text="当前没有待确认的 AI 复盘草稿。"
+                                               TextWrapping="Wrap" Margin="0,0,0,6" />
+                                    <TextBox x:Name="AiReviewDraftBox" Height="120" AcceptsReturn="True"
+                                             TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="7"
+                                             ToolTip="可以编辑；只有点击确认后才进入正式复盘记录。" />
+                                    <WrapPanel Margin="0,8,0,6">
+                                        <TextBlock Text="质量 1–5" VerticalAlignment="Center" />
+                                        <TextBox x:Name="AiReviewQualityBox" Width="40" Text="4" Margin="6,0,12,0" Padding="4" />
+                                        <CheckBox x:Name="AiReviewStructureBox" Content="结构可靠" IsChecked="True" Margin="0,0,12,0" />
+                                        <CheckBox x:Name="AiReviewAmbiguityBox" Content="歧义处理正确" IsChecked="True" Margin="0,0,12,0" />
+                                        <CheckBox x:Name="AiReviewNoOverreachBox" Content="没有越权推断" IsChecked="True" Margin="0,0,12,0" />
+                                        <CheckBox x:Name="AiReviewPrivacyBox" Content="最小事实范围正确" IsChecked="True" />
+                                    </WrapPanel>
+                                    <WrapPanel>
+                                        <TextBox x:Name="AiReviewEvaluationNoteBox" Width="500" Padding="6"
+                                                 ToolTip="可选：记录质量、歧义或隐私观察" />
+                                        <Button x:Name="ConfirmAiReviewDraftButton" Content="确认并写入正式复盘"
+                                                Padding="10,5" Margin="8,0,0,0" IsEnabled="False"
+                                                Click="ConfirmAiReviewDraftButton_Click" />
+                                        <Button x:Name="DiscardAiReviewDraftButton" Content="放弃草稿"
+                                                Padding="10,5" Margin="8,0,0,0" IsEnabled="False"
+                                                Click="DiscardAiReviewDraftButton_Click" />
+                                    </WrapPanel>
+                                    <Separator Margin="0,12" />
+                                    <TextBlock Text="手动脱敏 Qwen 对照（不会自动调用或切换供应商）" FontWeight="SemiBold" />
+                                    <TextBox x:Name="ManualComparisonPromptBox" Height="70" IsReadOnly="True"
+                                             TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="6"
+                                             Margin="0,5,0,5" />
+                                    <TextBox x:Name="ManualComparisonOutputBox" Height="70" AcceptsReturn="True"
+                                             TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="6"
+                                             ToolTip="用户手动把上面的脱敏提示交给 qwen3.7-flash 后，将结果粘贴到这里。" />
+                                    <Button Content="记录 qwen3.7-flash 手动对照" Width="230" Padding="10,5"
+                                            Margin="0,6,0,0" Click="RecordManualAiComparisonButton_Click" />
+                                    <Separator Margin="0,12" />
+                                    <TextBlock Text="两周模型试运行证据" FontWeight="SemiBold" />
+                                    <TextBlock x:Name="AiTrialEvidenceText" Text="尚无复盘 AI 请求。"
+                                               Margin="0,5,0,0" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="AiReviewHistoryText" Text="尚无已确认 AI 复盘记录。"
+                                               Margin="0,8,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+                    </TabControl>
+                </GroupBox>
+
+                <GroupBox Header="重复计划与发生项" Padding="10" Margin="0,0,0,14">
+                    <StackPanel>
+                        <WrapPanel Margin="0,0,0,8">
+                            <TextBlock Text="计划" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <ComboBox x:Name="PlanBox" Width="205" Margin="0,0,10,0" SelectionChanged="PlanBox_SelectionChanged" />
+                            <TextBlock Text="作用范围" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <ComboBox x:Name="ChangeScopeBox" Width="135" Margin="0,0,10,0" />
+                            <Button Content="跳过" Width="70" Margin="0,0,10,0" Click="SkipOccurrenceButton_Click" />
+                            <TextBlock Text="新开始" VerticalAlignment="Center" Margin="0,0,5,0" />
+                            <TextBox x:Name="AdjustmentStartBox" Width="145" Margin="0,0,8,0" Padding="5"
+                                     ToolTip="yyyy-MM-dd HH:mm" />
+                            <TextBlock Text="分钟" VerticalAlignment="Center" Margin="0,0,5,0" />
+                            <TextBox x:Name="AdjustmentDurationBox" Width="55" Margin="0,0,8,0" Padding="5" />
+                            <Button Content="调整" Width="70" Click="AdjustOccurrenceButton_Click" />
+                        </WrapPanel>
+                        <DockPanel x:Name="AdjustmentReasonPanel" Margin="0,0,0,8">
+                            <TextBlock DockPanel.Dock="Left" Text="调整原因" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <TextBox x:Name="AdjustmentReasonBox" Padding="5"
+                                     ToolTip="调整发生项时必填；跳过不使用此项。" />
+                        </DockPanel>
+                        <DataGrid x:Name="OccurrenceGrid" AutoGenerateColumns="False" IsReadOnly="True" Height="150"
+                                  SelectionMode="Single" SelectionChanged="OccurrenceGrid_SelectionChanged">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="日期" Binding="{Binding Date}" Width="110" />
+                                <DataGridTextColumn Header="开始" Binding="{Binding StartAt.LocalDateTime, StringFormat={}{0:yyyy-MM-dd HH:mm}}" Width="160" />
+                                <DataGridTextColumn Header="结束" Binding="{Binding EndAt.LocalDateTime, StringFormat={}{0:yyyy-MM-dd HH:mm}}" Width="160" />
+                                <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="100" />
+                                <DataGridTextColumn Header="独立承诺 ID" Binding="{Binding CommitmentId}" Width="*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+                </GroupBox>
+
+                <GroupBox Header="Core 正式状态" Padding="10">
+                    <StackPanel>
+                        <TextBlock x:Name="ProjectionText" Text="等待快照…" Margin="2,0,0,8" Foreground="#344054" />
+                        <DataGrid x:Name="CommitmentGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                  SelectionMode="Single" Height="230" SelectionChanged="CommitmentGrid_SelectionChanged"
+                                  PreviewMouseWheel="CommitmentGrid_PreviewMouseWheel">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="类型" Binding="{Binding Commitment.Kind}" Width="80" />
+                                <DataGridTextColumn Header="投入目标" Binding="{Binding Commitment.InputGoal}" Width="*" />
+                                <DataGridTextColumn Header="成果目标" Binding="{Binding Commitment.OutcomeGoal}" Width="*" />
+                                <DataGridTextColumn Header="开始" Binding="{Binding Commitment.StartAt.LocalDateTime, StringFormat={}{0:MM-dd HH:mm}}" Width="110" />
+                                <DataGridTextColumn Header="结束" Binding="{Binding Commitment.EndAt.LocalDateTime, StringFormat={}{0:MM-dd HH:mm}}" Width="110" />
+                                <DataGridTextColumn Header="监督阶段" Binding="{Binding SupervisionStatus}" Width="115" />
+                                <DataGridTextColumn Header="回顾结果" Binding="{Binding ReviewStatus}" Width="150" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button x:Name="ConfirmOfflineButton" Content="确认已开始线下工作" Height="34" Width="170"
+                                    IsEnabled="False" Click="ConfirmOfflineButton_Click" />
+                            <Button x:Name="ReviseCommitmentButton" Content="修订所选" Height="34" Width="100"
+                                    Margin="10,0,0,0" IsEnabled="False" Click="ReviseCommitmentButton_Click" />
+                            <Button x:Name="ViewHistoryButton" Content="查看历史" Height="34" Width="100"
+                                    Margin="10,0,0,0" IsEnabled="False" Click="ViewHistoryButton_Click" />
+                            <TextBlock x:Name="LatestReminderText" Margin="14,8,0,0" Foreground="#5B6474" />
+                        </StackPanel>
+                    </StackPanel>
+                </GroupBox>
+
+                <Border x:Name="HistoryPanel" Visibility="Collapsed" Background="White"
+                        BorderBrush="#B8C0CC" BorderThickness="1" CornerRadius="10"
+                        Padding="14" Margin="0,0,0,14">
+                    <StackPanel>
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="收起" Width="70" Height="28"
+                                    Click="CloseHistoryButton_Click" />
+                            <TextBlock x:Name="HistoryHeaderText" Text="所选承诺的历史"
+                                       FontSize="17" FontWeight="SemiBold" />
+                        </DockPanel>
+                        <TextBlock Text="版本、修改原因和此前发生的监督事实都会保留。"
+                                   Margin="0,5,0,10" Foreground="#5B6474" />
+                        <TextBlock x:Name="HistoryText" Text="正在读取…" TextWrapping="Wrap"
+                                   LineHeight="22" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Row="2" Background="#E7EAF0" CornerRadius="8" Padding="10" Margin="0,14,0,0">
+            <TextBlock x:Name="OperationStatusText" Text="准备就绪" TextWrapping="Wrap" />
+        </Border>
+    </Grid>
+</Window>

@@ -1,0 +1,84 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="Jarvis"
+           Manufacturer="Jarvis"
+           Version="$(var.ProductVersion)"
+           Language="2052"
+           Scope="perUser"
+           UpgradeCode="{09CDE4F3-8E10-49E2-87CA-57E267C5E1F8}">
+    <SummaryInformation Description="Jarvis Windows 11 x64 installer" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Jarvis is already installed." />
+
+    <Property Id="WINDOWSBUILDNUMBER" Secure="yes">
+      <RegistrySearch Id="BuildNumberSearch"
+                      Root="HKLM"
+                      Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentBuildNumber"
+                      Type="raw" />
+    </Property>
+    <Launch Condition="Installed OR (VersionNT64 AND MsiNTProductType = 1 AND WINDOWSBUILDNUMBER &gt;= 22000)"
+            Message="Jarvis v0.1 only supports Windows 11 x64 desktop editions." />
+
+    <Property Id="LocalFirstNotice"
+              Value="Jarvis is local-first and has no project cloud backend. It does not supervise while this PC is off or Jarvis is not running. The local SQLite database is not application-encrypted; enable Windows device encryption or BitLocker." />
+    <Property Id="UninstallRetentionNotice"
+              Value="Ordinary uninstall removes program files and login startup only. It keeps the local SQLite database, settings, local password-protected backups, and Jarvis credentials in Windows Credential Manager." />
+    <Property Id="ARPCOMMENTS"
+              Value="Ordinary uninstall keeps %LOCALAPPDATA%\Jarvis data, local backup folders, settings, and Jarvis credentials. Use Jarvis safe erase separately for permanent local deletion; cloud files are never deleted by uninstall." />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT"
+              Value="Jarvis is local-first. Ordinary uninstall later keeps your local database, settings, backups, and Windows credentials. Open Jarvis settings for backup and privacy controls." />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="LocalProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Jarvis" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Jarvis" />
+    </StandardDirectory>
+
+    <Feature Id="MainProgram"
+             Title="Jarvis Core and Desktop"
+             Description="Required self-contained Windows 11 x64 program files."
+             Level="1">
+      <ComponentGroupRef Id="PublishedFiles" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
+    </Feature>
+    <Feature Id="AutoStart"
+             Title="Start Jarvis when I sign in (recommended)"
+             Description="Core starts first and then opens Desktop. You can turn this off later in settings."
+             Level="1">
+      <ComponentRef Id="AutoStartComponent" />
+    </Feature>
+
+    <Component Id="StartMenuShortcutComponent"
+               Directory="ApplicationProgramsFolder"
+               Guid="*">
+      <Shortcut Id="JarvisStartMenuShortcut"
+                Name="Jarvis"
+                Description="Start Jarvis Core and Desktop"
+                Target="[INSTALLFOLDER]Jarvis.Core.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\Jarvis"
+                     Name="Installed"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <Component Id="AutoStartComponent" Directory="INSTALLFOLDER" Guid="*">
+      <RegistryValue Root="HKCU"
+                     Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                     Name="Jarvis Core"
+                     Type="string"
+                     Value="&quot;[INSTALLFOLDER]Jarvis.Core.exe&quot;"
+                     KeyPath="yes" />
+    </Component>
+
+    <ui:WixUI Id="WixUI_FeatureTree" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+  </Package>
+</Wix>
