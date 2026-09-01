@@ -29,6 +29,23 @@ android {
 }
 
 dependencies {
+    implementation "androidx.core:core:1.17.0"
     implementation "com.journeyapps:zxing-android-embedded:4.3.0"
     testImplementation "junit:junit:4.13.2"
+}
+
+tasks.register("verifyScannerRuntimeClasspath") {
+    doLast {
+        def hasAndroidXCore = configurations.releaseRuntimeClasspath
+                .resolvedConfiguration
+                .resolvedArtifacts
+                .any { artifact ->
+                    artifact.moduleVersion.id.group == "androidx.core" && artifact.name == "core"
+                }
+
+        if (!hasAndroidXCore) {
+            throw new GradleException(
+                    "The QR scanner requires androidx.core:core at runtime, but the release classpath does not contain it.")
+        }
+    }
 }

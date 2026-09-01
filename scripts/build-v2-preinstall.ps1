@@ -57,7 +57,7 @@ try {
     Push-Location "$drive\mobile"
     try {
         & "$drive\.tools\android-probe\gradle-9.4.1\bin\gradle.bat" `
-            --no-daemon clean testDebugUnitTest lintDebug assembleDebug assembleRelease `
+            --no-daemon clean testDebugUnitTest lintDebug verifyScannerRuntimeClasspath assembleDebug assembleRelease `
             "-PjarvisVersionName=$ProductVersion" "-PjarvisVersionCode=2"
         if ($LASTEXITCODE -ne 0) { throw "Android build, tests, or lint failed." }
     } finally {
