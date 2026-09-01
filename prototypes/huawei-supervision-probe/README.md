@@ -58,6 +58,12 @@ Collect and analyze results:
 .\probe.ps1 collect
 ```
 
-## Pass gate
+## Gate result
 
-The production skeleton remains blocked until `DEVICE-TEST.md` is fully measured. In particular, a pass requires no missed target detection in 100 foreground switches, every target entry route covered before meaningful interaction, expiry within 10 seconds without Windows, explicit degraded state when permissions/service are unavailable, and an eight-hour lifecycle run. Any stable ordinary-user bypass or frequent late detection is a fail, not a reason to rename a notification as blocking.
+The target-device evidence and final decision are recorded in
+`DEVICE-TEST.md`. The preferred Usage Stats + ordinary application-overlay
+mechanism is accepted for the production skeleton. The owner explicitly waived
+the real-notification entry route, Huawei power-saving mode and eight-hour run;
+those cases remain unmeasured risks rather than passes. Any future stable
+ordinary-user bypass or frequent late detection is still a failure, not a
+reason to rename a notification as blocking.

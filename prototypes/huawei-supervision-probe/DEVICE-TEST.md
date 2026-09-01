@@ -72,8 +72,10 @@ host-command-to-block time was 1,217 ms. The recent-task run used the front
 Huawei recents card and matched 100/100 restores to blocker events; the maximum
 usage-event-to-block time was 254 ms. The notification service reported zero
 active notifications for all four target packages, so no real notification
-content or synthetic substitute was used. Notification-route coverage remains
-open until actual target-app notifications are available.
+content or synthetic substitute was used. On 2026-09-01 the owner explicitly
+excluded this route from the personal V2-A skeleton gate because notification
+behavior was not considered worth further test effort. These cells are
+therefore **N/A by owner waiver**, not passes.
 
 - [x] Block page reads no target-app content.
 - [x] Temporary access refuses an empty reason.
@@ -94,9 +96,9 @@ stopped the foreground service and removed the application-overlay window.
 - [x] Windows stopped: cached policy still blocks and expires locally.
 - [x] Screen off/on: service state and blocking recover.
 - [x] Probe removed from recents: service state and blocking recover or explicitly report unavailable.
-- [ ] Huawei power-saving mode: observed behavior recorded.
-- [ ] Phone reboot: observed recovery/degraded behavior recorded.
-- [ ] Eight-hour run records background kills, misses and battery delta.
+- **N/A by owner waiver** — Huawei power-saving mode was not measured.
+- [x] Phone reboot: persisted policy, alarm, service and blocking recovery were measured.
+- **N/A by owner waiver** — the eight-hour run was not performed.
 
 The probe has no Windows runtime or network permission; confirmed policies were
 stored in app-private preferences and executed locally. With Wi-Fi disabled, a
@@ -109,10 +111,37 @@ blocked another target. A shell request for standard battery saver was rejected
 while USB power was connected (the system continued to report OFF), so that
 attempt is not counted as a power-saving result.
 
+For the reboot run, an active 30-minute policy blocked Douyin before the reboot
+command. The device boot count changed from 40 to 41. After restart, the same
+policy ID and original end epoch remained persisted. The probe recorded
+`BOOT_COMPLETED` at 2026-09-01 08:59:09.489 +08:00, rescheduled the exact expiry
+11 ms later to the unchanged end epoch, started the foreground service 100 ms
+after the recovery attempt, and reported the service available after 129 ms.
+Recovery was automatic and occurred before the probe activity was opened.
+
+The boot-recovery event occurred 109,437 ms after the host issued `adb reboot`;
+that interval includes shutdown, system boot, first unlock and Huawei broadcast
+delivery, so enforcement must be treated as unavailable until the recovered
+service reports healthy. After recovery, one launch each of Douyin, Bilibili,
+Xiaohongshu and WeChat produced four usage events and four blocker events. The
+measured usage-detection-to-block intervals were respectively 179, 50, 52 and
+99 ms. The rebuilt alarm was present at the original policy end time; its firing
+was not re-waited in this run because local exact expiry had already been
+measured separately at 21 ms late. The owner then stopped the probe policy
+through its normal UI, and the service was destroyed with no active policy left.
+
 ## Verdict
 
-- Gate: **pending** (`pass` / `fail` / `needs explicit accessibility decision`)
+- Gate: **accepted for the production skeleton with documented owner waivers**
 - Tested build commit: `6f1dc7f`
 - Tested APK SHA-256: `D1AD359CD6A4849051B67B09CE5BC0F97989997F10F21B9142D5446138A99C98`
-- Reason: pending
-- Smallest validated production mechanism: pending
+- Reason: the preferred ordinary-app path detected 100/100 controlled target
+  launches, blocked every measured home/deep-link/recents route, enforced
+  temporary access and local expiry, survived offline/screen-off/recents
+  removal, and automatically recovered an active policy after a real device
+  reboot. The real-notification route, Huawei power-saving mode and eight-hour
+  run remain deliberately unmeasured owner-accepted risks; they are not passes.
+- Smallest validated production mechanism: `UsageStatsManager` foreground
+  detection + opaque `TYPE_APPLICATION_OVERLAY` blocker + visible foreground
+  service + persisted local policy + exact expiry alarm + `BOOT_COMPLETED`
+  alarm/service reconstruction. The accessibility comparison is rejected.
