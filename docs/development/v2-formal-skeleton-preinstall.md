@@ -52,6 +52,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sign-mobile-re
 
 ## 正式日常使用前仍需解决
 
-- 校园 Wi-Fi `ncepu-wifi` 开启客户端隔离：电脑与手机虽处同一 IPv4 子网，但双向 Ping 和手机到 Core TCP 均失败。手机热点下局域网配对与同步通过，证明应用链路有效，但手动切热点不接受为日常方案。
-- Windows 当前由系统联网提示生成了 `Jarvis.Core.exe` 的 Public 入站允许规则。正式网络方案确定时必须把 Core 约束到可信接口/网络范围，不能依赖校园网恰好隔离客户端。
-- 校园网络方案的选择与真机门禁记录在 `docs/research/campus-network-sync-options.md`；在该项完成前，只能把当前版本称为“可安装、核心执行闭环通过”，不能称为校园场景免配置可用。
+- 校园 Wi-Fi `ncepu-wifi` 开启客户端隔离：电脑与手机虽处同一 IPv4 子网，但双向 Ping 和手机到 Core TCP 均失败。手机热点下局域网配对与同步通过，证明应用链路有效。热点继续作为当前配对、策略下发和故障兜底；策略成功缓存后，执行与本地到期不依赖热点。
+- 2026-09-02 决定先验证系统自带 Bluetooth PAN，不先安装 Tailscale。目标电脑已经发现 Mate 70 Pro+ 的 NAP 服务和 Microsoft BTHPAN 适配器；若真机证明本地双向可达、地址稳定，且睡眠/重启后最多只需重新加入一次 PAN，则把它作为同处一地时的默认同步链路。完整门禁见 `docs/research/bluetooth-pan-hotspotless-sync-spike.md`。
+- 手机暂不在电脑旁，因此蓝牙 PAN 的地址稳定性、自动重连、校园 WLAN 共存和 30 分钟真实同步尚未验收；在通过前不得写成正式可用，也不为它预建多 endpoint、mDNS 或自定义蓝牙协议。
+- Windows 当前由系统联网提示生成了 `Jarvis.Core.exe` 的 Public 入站允许规则。正式网络方案确定时必须把 Core 约束到实际同步接口和手机来源，不能依赖校园网恰好隔离客户端。
+- Tailscale 保留为蓝牙 PAN 失败后的成熟备选，Windows Wi-Fi 热点继续作为配对与故障兜底；不建设 Jarvis 云中继。
