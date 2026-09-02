@@ -8,17 +8,32 @@
 
 **先做一次不改代码的 Bluetooth PAN（BTPAN）真机 spike；通过后，把它作为同处一地时的常驻本地同步链路。Tailscale 暂不安装，保留为 BTPAN 不稳定时的第二选择；Windows Wi-Fi 热点继续作为配对和故障兜底。**
 
+## 2026-09-02 目标真机结果
+
+最小可用门禁已经通过，BTPAN 可作为同处一地时的默认同步链路：
+
+- Mate 70 Pro+ 开启“通过蓝牙共享网络”后，Windows 11 以 Access Point 角色加入成功；Windows BTHPAN 获得 `192.168.44.83/24`，手机 PAN 地址为 `192.168.44.1`。
+- 手机到电脑 BTPAN 地址 Ping 5 次全部成功；Core 在 `192.168.44.83:42731` 收到了来自 `192.168.44.1` 的真实 HTTPS/TCP 连接。
+- 电脑同时保留校园 WLAN `ncepu-wifi`；WLAN interface metric 为 20，BTPAN 为 40，默认互联网路由没有被蓝牙链路抢走。
+- 在只暴露 BTPAN endpoint 时重新配对一次，手机进入 `Ready`。正式 30 分钟测试承诺成功下发，手机登记了精确到期闹钟。
+- 人工断开并重新加入 PAN 后，手机侧下游接口从 49 变为 50，证明发生了真实重连；PC 地址仍为 `192.168.44.83`，30 秒内恢复 `Ready` 和真实 TCP 连接。
+- 重连后打开 B站仍出现 Jarvis 不透明全屏覆盖层，证明已缓存策略在链路中断时继续执行；提前结束承诺后，手机在下一轮同步清除策略，再开 B站不再覆盖。
+
+这次结果证明日常创建、修改和结束监督不再需要切手机热点。尚未把“Windows/手机重启后自动加入 PAN”写成已通过；如果开机后 Windows 没有自动恢复，只需在系统蓝牙设备页重新加入一次 PAN，不需要重新扫码，也不影响手机已经缓存的监督。手机本次测试时 WLAN 处于关闭状态，因此“手机同时连接校园 WLAN”仍是未测的兼容性观察项；电脑校园 WLAN 与 BTPAN 共存已经通过。
+
+原计划中的五次重连、30 分钟锁屏、PC 睡眠和双端重启不再作为第一阶段功能阻断项。它们属于日常可靠性观察；当前产品范围是一台私人电脑和一部就在身边的手机，而且缓存策略、离线执行与重连补传已经分别验收。若后续实际使用出现频繁掉线或地址变化，再按回退表进入 Tailscale spike，不预先建设多传输层。
+
 这是当前最小充分方案。目标手机已经与电脑完成蓝牙配对；Windows 本机枚举到了手机的 Personal Area Network NAP 服务和 Microsoft BTHPAN 网络适配器，只差实际加入 PAN。华为官方支持页明确把 HUAWEI Mate 70 Pro+ 和 HarmonyOS 4.3 列入适用范围，并说明设备会识别当前移动网络或 WLAN，且可开启“通过蓝牙共享网络”。[华为：共享网络给其他设备](https://consumer.huawei.com/cn/support/content/zh-cn15801195/) Microsoft 的 Windows 11 官方步骤则是：配对后，在手机侧开启蓝牙共享，在 Windows 设备页对手机的 Personal Area Network 选择“加入”，角色选择 Access Point。[Microsoft：Connect to a Bluetooth network in Windows](https://support.microsoft.com/en-US/Windows/Hardware/Bluetooth/connect-to-a-bluetooth-network-in-windows)
 
 若目标机能维持 BTPAN，手机可继续连接校园 WLAN；电脑也继续连接校园 WLAN，同时两者之间多出一条不经过校园 AP 的本地 IP 链路。Jarvis 的手机客户端仍主动访问电脑 HTTPS 端口，不需要 Tailscale、账号、VPN 权限或新协议。
 
-但官方文档**没有承诺**以下三件事，因此现在还不能直接宣布 BTPAN 为正式方案：
+官方文档**没有承诺**以下三件事；前两项的最小路径已经由上述真机证据回答，睡眠/重启可靠性继续作为日常观察项：
 
 1. 手机作为 NAP 时，手机本机上的 Jarvis 是否能主动访问作为 PANU 的 Windows 客户端；
 2. Windows 从手机获得的 BTPAN IPv4 是否跨断连、睡眠和重启保持不变；
 3. Windows 是否会在开机/唤醒后自动重新加入 PAN，或至少一次加入后能稳定保持整日。
 
-这三个问题必须在目标真机上验证。若第一项失败，BTPAN 方向不成立；若第二项失败，当前“只保存一个 endpoint”的手机实现会失联；若第三项只需要每次开机点一次，但不需要每次布置监督再操作，可由用户决定是否已足够方便。
+若后续发现地址跨重启变化，当前“只保存一个 endpoint”的手机实现会失联；若只需要每次开机点一次，但不需要每次布置监督再操作，则仍满足当前“不要每次开热点”的需求。
 
 ## 推荐拓扑
 
@@ -87,7 +102,7 @@ Windows 官方支持把 Wi-Fi、以太网或蜂窝网络通过 Wi-Fi 或 Bluetoo
 
 Tailscale 的优势仍然明确：节点获得跨物理网络稳定的 `100.x` 地址，直连失败时可退回 DERP 中继。[Tailscale：IP addresses](https://tailscale.com/docs/concepts/ip-and-dns-addresses)；[Tailscale：Connection types](https://tailscale.com/docs/reference/connection-types) 但 Android 安装需要 VPN 授权，而 Android 同时只能运行一个 VPN。[Tailscale：Install on Android](https://tailscale.com/docs/install/android)；[Android：VpnService](https://developer.android.com/reference/android/net/VpnService) 对当前“一台电脑、一部就在身边的手机”，在验证系统自带 BTPAN 前直接引入它仍偏重。
 
-## 不改代码的真机 spike
+## 不改代码的真机 spike（已执行）
 
 ### 前置动作
 
@@ -132,7 +147,7 @@ Windows 默认用基于链路速度的 Automatic Metric 在多个默认网关间
 
 这一步会更换设备令牌，但不应更换 Core 证书。若配对窗口仍选择校园地址，停止 spike，记录适配器类型和枚举结果，不手工篡改数据库或手机 SharedPreferences。
 
-### 第三关：日常可靠性
+### 第三关：日常可靠性观察
 
 依次执行并记录地址、在线恢复时间和是否需要用户点击：
 
@@ -144,17 +159,15 @@ Windows 默认用基于链路速度的 Automatic Metric 在多个默认网关间
 6. 重启手机；
 7. 进行一次正常校园工作时段的续航/发热观察。
 
-正式采用的硬门槛：
+第一阶段的最小硬门槛：
 
 - PC-BTPAN IPv4 不变化；
 - 所有已连接时段均能在 30 秒内恢复 Jarvis 同步；
-- PC 睡眠恢复后无需重配对；
-- 手机保持校园 WLAN；
 - Windows 默认互联网路由保持校园 WLAN；
 - Windows 防火墙能够把 Jarvis 端口限制在 BTPAN 本地地址/手机来源，而不是继续对所有 Public 网络开放；
 - 已缓存策略在 BTPAN 断开时继续执行，到期本地解除，恢复后事件只补传一次。
 
-软门槛由用户决定：若 Windows 或手机重启后只需重新加入一次 PAN，但一整天内不再为每次监督开热点，可以视为满足“不要每次热点”的需求；若每次睡眠、锁屏或短暂离开都要重新加入，则判定失败。
+PC 睡眠、双端重启、手机校园 WLAN 共存和长时间续航是日常可靠性观察项。若 Windows 或手机重启后只需重新加入一次 PAN，但一整天内不再为每次监督开热点，视为满足当前需求；若每次睡眠、锁屏或短暂离开都要重新加入，则判定失败。
 
 ## 安全边界
 
@@ -178,10 +191,10 @@ Windows 默认用基于链路速度的 Automatic Metric 在多个默认网关间
 
 第一阶段不应立刻关闭网络问题，也不应实现 Tailscale。正确顺序是：
 
-1. 完成上面的 BTPAN 网络层和 30 分钟同步 spike；
-2. 若通过，再以最小 ADR/手册更新确认“BTPAN 为同地默认、热点为配对/兜底”；
-3. 只有 endpoint 选择确实需要时，增加一个显式手机同步接口选项，不建设自动多传输层；
-4. 若失败，直接回到已经完成调研的 Tailscale 连通性 spike，不自建 Jarvis 云中继。
+1. 以最小 ADR/手册更新确认“BTPAN 为同地默认、热点为配对/兜底”；
+2. 把 Windows 防火墙限制为 BTPAN 接口上的 TCP 42731；
+3. 只有 endpoint 选择确实影响重新配对时，才增加显式手机同步接口选项，不建设自动多传输层；
+4. 若日常观察出现地址变化或频繁掉线，直接回到已经完成调研的 Tailscale 连通性 spike，不自建 Jarvis 云中继。
 
 ## 一手来源
 
