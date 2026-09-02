@@ -73,6 +73,7 @@ New-NetFirewallRule `
     -EdgeTraversalPolicy Block | Out-Null
 
 $created = Get-NetFirewallRule -DisplayName $ruleDisplayName -ErrorAction Stop
+$interface = $created | Get-NetFirewallInterfaceFilter
 $port = $created | Get-NetFirewallPortFilter
 $address = $created | Get-NetFirewallAddressFilter
 [pscustomobject]@{
@@ -81,7 +82,7 @@ $address = $created | Get-NetFirewallAddressFilter
     Direction = $created.Direction
     Action = $created.Action
     Profile = $created.Profile
-    InterfaceAlias = $created.InterfaceAlias -join ","
+    InterfaceAlias = $interface.InterfaceAlias -join ","
     Protocol = $port.Protocol
     LocalPort = $port.LocalPort -join ","
     RemoteAddress = $address.RemoteAddress -join ","

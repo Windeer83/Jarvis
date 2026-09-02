@@ -55,7 +55,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sign-mobile-re
 - 校园 Wi-Fi `ncepu-wifi` 开启客户端隔离：电脑与手机虽处同一 IPv4 子网，但双向 Ping 和手机到 Core TCP 均失败。手机热点下局域网配对与同步通过，证明应用链路有效。热点继续作为当前配对、策略下发和故障兜底；策略成功缓存后，执行与本地到期不依赖热点。
 - 2026-09-02 已通过系统自带 Bluetooth PAN 的最小真机门禁，不安装 Tailscale：手机到 PC 的 BTPAN 地址双向可达，真实策略下发、断开/重连、离线继续阻断、重连恢复和策略撤销均通过；电脑继续使用校园 WLAN 作为默认互联网路由。现在同处一地的日常监督不再需要每次切热点，Windows Wi-Fi 热点只保留为首次配对与故障兜底。完整证据见 `docs/research/bluetooth-pan-hotspotless-sync-spike.md`。
 - 手机本次测试时 WLAN 关闭，因此“手机同时保持校园 WLAN”尚未实测；Windows/手机重启后的自动加入、PC 睡眠和长时间续航也只记为日常观察，不写成已通过。若开机后没有自动恢复，在 Windows 蓝牙设备页重新加入一次 PAN 即可，不需要重新扫码。
-- Windows 当前由系统联网提示生成了 `Jarvis.Core.exe` 的 Public 入站 TCP/UDP 全开放规则。运行 `scripts\configure-mobile-sync-firewall.ps1` 可删除这两条宽规则，并只允许 Public 配置文件中经“蓝牙网络连接”接口进入的 TCP 42731；这一步需要管理员 PowerShell。
+- 2026-09-02 已以管理员权限运行 `scripts\configure-mobile-sync-firewall.ps1`：系统生成的 Public 入站 TCP/UDP 全开放规则已删除，现在只允许 Public 配置文件中经“蓝牙网络连接”接口进入的 TCP 42731，远端限制为 `LocalSubnet`。应用新规则后手机仍保持 `Ready` 并持续建立真实同步连接。
 - Tailscale 保留为蓝牙 PAN 失败后的成熟备选，Windows Wi-Fi 热点继续作为配对与故障兜底；不建设 Jarvis 云中继。
 
 ## Bluetooth PAN 日常连接
